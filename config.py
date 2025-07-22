@@ -4,7 +4,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-HYPERBOLIC_API_KEY = os.getenv("HYPERBOLIC_API_KEY")
+# Diubah dari HYPERBOLIC_API_KEY
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") 
 BINANCE_API_KEY = os.getenv("BINANCE_API_KEY")
 BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET")
 ALLOWED_USER_IDS = set(map(int, os.getenv("ALLOWED_USER_IDS", "").split(",")))
