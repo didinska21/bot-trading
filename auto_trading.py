@@ -22,9 +22,9 @@ class AutoTradingBot:
         # Trading Config
         self.config = {
             'max_leverage': 20,
-            'position_size_pct': 15,  # 10-20% of balance
-            'max_loss_pct': 17.5,  # 15-20% average = 17.5%
-            'min_confidence': 85,  # Minimum 85% for futures
+            'position_size_pct': 10,  # 10-20% of balance
+            'max_loss_pct': 15,  # 15-20% average = 17.5%
+            'min_confidence': 90,  # Minimum 90% for futures
             'timeframe': '1h',
             'scan_interval': 300,  # 5 minutes
             'max_open_positions': 1
