@@ -1,4 +1,4 @@
-# main.py - UPGRADED VERSION WITH SPOT & FUTURES
+# main.py - UPGRADED VERSION WITH SPOT, FUTURES & AUTO TRADING
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -9,6 +9,8 @@ from binance.client import Client
 from config import TELEGRAM_TOKEN, BINANCE_API_KEY, BINANCE_API_SECRET, TOP_TOKENS
 from utils import only_allowed, format_result_for_telegram
 from ai import analyze_with_gpt
+from auto_trading import AutoTradingBot
+import asyncio
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -17,18 +19,26 @@ logging.basicConfig(
 
 binance_client = Client(api_key=BINANCE_API_KEY, api_secret=BINANCE_API_SECRET)
 
+# Global auto trading bot instance
+auto_bot = AutoTradingBot()
+
 # Conversation states
 SELECTING_MODE, SELECTING_TOKEN, SELECTING_STRATEGY = range(3)
 
 @only_allowed
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk command /start dengan menu SPOT & FUTURES"""
+    """Handler untuk command /start dengan menu SPOT, FUTURES & AUTO TRADING"""
     keyboard = [
         [
             InlineKeyboardButton("💼 SPOT TRADING", callback_data="mode_spot"),
             InlineKeyboardButton("📈 FUTURES TRADING", callback_data="mode_futures")
         ],
-        [InlineKeyboardButton("ℹ️ Help & Info", callback_data="help")]
+        [
+            InlineKeyboardButton("🤖 AUTO TRADING FUTURES", callback_data="mode_auto")
+        ],
+        [
+            InlineKeyboardButton("ℹ️ Help & Info", callback_data="help")
+        ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
@@ -39,7 +49,8 @@ Selamat datang! Bot ini memberikan sinyal trading crypto dengan analisis AI yang
 
 <b>📊 Pilih Mode Trading:</b>
 • <b>SPOT</b> - Trading spot dengan risk rendah
-• <b>FUTURES</b> - Trading futures dengan leverage
+• <b>FUTURES</b> - Trading futures manual dengan leverage
+• <b>AUTO TRADING</b> - Auto trading futures dengan AI
 
 Silakan pilih mode di bawah ini:
 """
@@ -61,11 +72,16 @@ Silakan pilih mode di bawah ini:
 
 @only_allowed
 async def handle_mode_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk memilih mode SPOT atau FUTURES"""
+    """Handler untuk memilih mode SPOT, FUTURES, atau AUTO"""
     query = update.callback_query
     await query.answer()
     
-    mode = query.data.split("_")[1]  # spot atau futures
+    mode = query.data.split("_")[1]  # spot, futures, atau auto
+    
+    # Handle Auto Trading mode
+    if mode == "auto":
+        return await show_auto_trading_menu(update, context)
+    
     context.user_data["mode"] = mode
     
     # Buat keyboard untuk pilihan token (5 kolom)
@@ -94,6 +110,195 @@ async def handle_mode_selection(update: Update, context: ContextTypes.DEFAULT_TY
     )
     
     return SELECTING_TOKEN
+
+@only_allowed
+async def show_auto_trading_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show Auto Trading menu"""
+    query = update.callback_query
+    
+    # Get current status
+    status = auto_bot.get_status()
+    balance = status['balance']
+    is_running = status['is_running']
+    
+    status_emoji = "🟢" if is_running else "🔴"
+    status_text = "RUNNING" if is_running else "STOPPED"
+    
+    menu_text = f"""
+🤖 <b>AUTO TRADING FUTURES</b>
+
+<b>Status: {status_emoji} {status_text}</b>
+
+💰 <b>Balance Info:</b>
+• Total: ${balance['total_balance']:.2f} USDT
+• Available: ${balance['available_balance']:.2f} USDT
+• Unrealized PnL: ${balance['unrealized_pnl']:.2f}
+
+⚙️ <b>Config:</b>
+• Leverage: {status['config']['max_leverage']}x
+• Position Size: {status['config']['position_size_pct']}%
+• Max Loss: {status['config']['max_loss_pct']}%
+• Min Confidence: {status['config']['min_confidence']}%
+• Timeframe: {status['config']['timeframe']}
+
+📊 <b>Stats:</b>
+• Total Trades: {status['total_trades']}
+• Open Positions: {len(status['open_positions']) if status['open_positions'] else 0}
+"""
+    
+    # Build keyboard based on status
+    if is_running:
+        keyboard = [
+            [InlineKeyboardButton("🔴 STOP Auto Trading", callback_data="auto_stop")],
+            [InlineKeyboardButton("📊 View Positions", callback_data="auto_positions")],
+            [InlineKeyboardButton("📜 Trade Log", callback_data="auto_log")],
+            [InlineKeyboardButton("🚨 Emergency Close All", callback_data="auto_emergency")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_start")]
+        ]
+    else:
+        keyboard = [
+            [InlineKeyboardButton("🟢 START Auto Trading", callback_data="auto_start")],
+            [InlineKeyboardButton("⚙️ Settings", callback_data="auto_settings")],
+            [InlineKeyboardButton("📜 Trade Log", callback_data="auto_log")],
+            [InlineKeyboardButton("🔙 Back to Menu", callback_data="back_to_start")]
+        ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        menu_text,
+        parse_mode="HTML",
+        reply_markup=reply_markup
+    )
+    
+    return SELECTING_MODE
+
+@only_allowed
+async def handle_auto_trading_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle auto trading actions"""
+    query = update.callback_query
+    await query.answer()
+    
+    action = query.data.split("_")[1]
+    
+    if action == "start":
+        auto_bot.start()
+        
+        # Start the trading loop in background
+        asyncio.create_task(auto_bot.scan_and_trade())
+        
+        await query.answer("🟢 Auto Trading Started!", show_alert=True)
+        return await show_auto_trading_menu(update, context)
+    
+    elif action == "stop":
+        auto_bot.stop()
+        await query.answer("🔴 Auto Trading Stopped!", show_alert=True)
+        return await show_auto_trading_menu(update, context)
+    
+    elif action == "positions":
+        status = auto_bot.get_status()
+        positions = status['open_positions']
+        
+        if not positions:
+            positions_text = "📊 <b>Open Positions</b>\n\nNo open positions."
+        else:
+            positions_text = "📊 <b>Open Positions</b>\n\n"
+            for pos in positions:
+                pnl_emoji = "🟢" if pos['unrealized_pnl'] > 0 else "🔴"
+                positions_text += f"""
+<b>{pos['symbol']}</b>
+Side: {pos['side']}
+Entry: ${pos['entry_price']:.4f}
+Mark: ${pos['mark_price']:.4f}
+PnL: {pnl_emoji} ${pos['unrealized_pnl']:.2f}
+Leverage: {pos['leverage']}x
+━━━━━━━━━━━━━━━
+"""
+        
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mode_auto")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            positions_text,
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+        return SELECTING_MODE
+    
+    elif action == "log":
+        trades = auto_bot.get_trade_log(limit=10)
+        
+        if not trades:
+            log_text = "📜 <b>Trade Log</b>\n\nNo trades yet."
+        else:
+            log_text = "📜 <b>Trade Log (Last 10)</b>\n\n"
+            for trade in reversed(trades):
+                status_emoji = "🟢" if trade['status'] == 'CLOSED' else "🔵"
+                log_text += f"""
+{status_emoji} <b>{trade['symbol']}</b> - {trade['side']}
+Entry: ${trade['entry_price']:.4f}
+Size: ${trade['position_size']:.2f}
+Confidence: {trade['confidence']}%
+Time: {trade['timestamp']}
+━━━━━━━━━━━━━━━
+"""
+        
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mode_auto")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            log_text,
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+        return SELECTING_MODE
+    
+    elif action == "emergency":
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ YES, Close All", callback_data="auto_emergency_confirm"),
+                InlineKeyboardButton("❌ Cancel", callback_data="mode_auto")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "🚨 <b>EMERGENCY CLOSE ALL</b>\n\n"
+            "⚠️ This will close ALL open positions immediately!\n\n"
+            "Are you sure?",
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+        return SELECTING_MODE
+    
+    elif action == "emergency_confirm":
+        auto_bot.emergency_close_all()
+        await query.answer("🚨 All positions closed!", show_alert=True)
+        return await show_auto_trading_menu(update, context)
+    
+    elif action == "settings":
+        settings_text = """
+⚙️ <b>AUTO TRADING SETTINGS</b>
+
+Coming soon! For now, edit settings in auto_trading.py config.
+
+Current Settings:
+• Max Leverage: 20x
+• Position Size: 15% of balance
+• Max Loss: 17.5% of balance
+• Min Confidence: 85%
+• Timeframe: 1h
+• Scan Interval: 5 minutes
+"""
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mode_auto")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            settings_text,
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+        return SELECTING_MODE
 
 @only_allowed
 async def handle_token_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -286,7 +491,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 <b>🎯 MODE TRADING:</b>
 • <b>SPOT</b> - Trading tanpa leverage, risk lebih rendah
-• <b>FUTURES</b> - Trading dengan leverage, risk tinggi tapi profit besar
+• <b>FUTURES</b> - Trading futures manual dengan leverage
+• <b>AUTO TRADING</b> - Bot otomatis scan & execute trade
 
 <b>⏰ TIMEFRAME:</b>
 • <b>Scalping (15m)</b> - Trading cepat, hold 15-60 menit
@@ -295,21 +501,21 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 • <b>Long-Term (1w)</b> - Investment jangka panjang
 • <b>Multi TF (4h)</b> - Analisis multi timeframe
 
-<b>📊 INDIKATOR YANG DIGUNAKAN:</b>
-• RSI - Relative Strength Index
-• MACD - Moving Average Convergence Divergence
-• EMA - Exponential Moving Average
-• Volume & OBV Analysis
-• Support/Resistance Levels
+<b>🤖 AUTO TRADING:</b>
+• Bot scan market setiap 5 menit
+• Hanya execute signal dengan confidence ≥85%
+• Auto TP/SL via Binance
+• Max 1 position open
+• Position size: 15% balance
+• Max loss: ~17.5% balance per trade
 
 <b>⚠️ DISCLAIMER:</b>
-Bot ini hanya memberikan referensi analisis. Keputusan trading sepenuhnya tanggung jawab Anda. Selalu gunakan risk management!
+Bot ini hanya memberikan referensi. Trading crypto berisiko tinggi! Gunakan dana yang siap hilang.
 
 <b>💡 TIPS:</b>
-• Gunakan stop loss
-• Jangan FOMO atau panic sell
-• Diversifikasi portfolio
-• Risk max 2-5% per trade
+• Start dengan capital kecil
+• Monitor bot secara berkala
+• Gunakan emergency stop jika perlu
 """
     
     keyboard = [[InlineKeyboardButton("🔙 Kembali", callback_data="back_to_start")]]
@@ -328,42 +534,6 @@ Bot ini hanya memberikan referensi analisis. Keputusan trading sepenuhnya tanggu
             reply_markup=reply_markup
         )
 
-@only_allowed
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk command /stats"""
-    try:
-        # Ambil market overview
-        tickers = binance_client.get_ticker()
-        btc = next((t for t in tickers if t['symbol'] == 'BTCUSDT'), None)
-        eth = next((t for t in tickers if t['symbol'] == 'ETHUSDT'), None)
-        
-        stats_text = f"""
-📊 <b>MARKET OVERVIEW</b>
-
-<b>Bitcoin (BTC)</b>
-💰 Price: ${float(btc['lastPrice']):,.2f}
-📈 24h Change: {float(btc['priceChangePercent']):.2f}%
-📊 24h Volume: ${float(btc['volume']):,.0f}
-
-<b>Ethereum (ETH)</b>
-💰 Price: ${float(eth['lastPrice']):,.2f}
-📈 24h Change: {float(eth['priceChangePercent']):.2f}%
-📊 24h Volume: ${float(eth['volume']):,.0f}
-
-⏰ Last Update: {update.message.date.strftime('%Y-%m-%d %H:%M:%S')}
-"""
-        
-        keyboard = [[InlineKeyboardButton("🔄 Refresh", callback_data="refresh_stats")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(
-            stats_text,
-            parse_mode="HTML",
-            reply_markup=reply_markup
-        )
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {str(e)}")
-
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk semua callback button"""
     query = update.callback_query
@@ -379,6 +549,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await handle_token_selection(update, context)
     elif query.data.startswith("strategy_"):
         return await handle_strategy_selection(update, context)
+    elif query.data.startswith("auto_"):
+        return await handle_auto_trading_actions(update, context)
 
 def main():
     """Main function untuk menjalankan bot"""
@@ -412,7 +584,6 @@ def main():
     # Add handlers
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CommandHandler("stats", stats_command))
     
     # Start bot
     logging.info("🤖 Bot started successfully!")
