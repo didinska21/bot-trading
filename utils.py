@@ -1,8 +1,10 @@
 from telegram import Update
 from telegram.ext import ContextTypes
 from config import ALLOWED_USER_IDS
+import re
 
 def format_number(val):
+    """Format angka untuk display yang lebih readable"""
     try:
         val = float(val)
         if val < 0.01:
@@ -17,23 +19,32 @@ def format_number(val):
         return str(val)
 
 def only_allowed(func):
+    """Decorator untuk membatasi akses hanya user yang diizinkan"""
     async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.effective_user.id not in ALLOWED_USER_IDS:
-            await update.message.reply_text("⛔ Maaf, kamu tidak memiliki akses ke bot ini.")
+        user_id = update.effective_user.id if update.effective_user else None
+        
+        if user_id not in ALLOWED_USER_IDS:
+            if update.message:
+                await update.message.reply_text("⛔ Maaf, kamu tidak memiliki akses ke bot ini.")
+            elif update.callback_query:
+                await update.callback_query.answer("⛔ Akses ditolak!", show_alert=True)
             return
+        
         return await func(update, context)
     return wrapper
 
-import re
 def format_result_for_telegram(text: str) -> str:
+    """Format AI result untuk Telegram HTML"""
     def sci_to_decimal(match):
         try:
             return format_number(float(match.group()))
         except:
             return match.group()
 
+    # Convert scientific notation to decimal
     text = re.sub(r"\b\d+\.\d+e[+-]?\d+\b", sci_to_decimal, text, flags=re.IGNORECASE)
 
+    # Replace markdown bold dengan HTML bold
     replacements = {
         "**FUTURES**": "<b>📊 REKOMENDASI SETUP FUTURES</b>",
         "**SPOT**": "<b>💼 REKOMENDASI SETUP SPOT</b>",
