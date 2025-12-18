@@ -1,4 +1,6 @@
 python-telegram-bot==20.7
-python-dotenv
-requests
-python-binance
+python-dotenv==1.0.0
+groq==0.11.0
+python-binance==1.0.19
+pandas==2.1.4
+numpy==1.26.2
