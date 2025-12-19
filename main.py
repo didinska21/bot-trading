@@ -12,6 +12,214 @@ from ai import analyze_with_gpt
 from auto_trading import AutoTradingBot
 import asyncio
 
+
+# Tambahkan di bagian atas main.py (setelah import yang sudah ada)
+from shared_state import SharedState
+
+# Tambahkan setelah inisialisasi binance_client
+shared_state = SharedState()
+
+# Tambahkan fungsi-fungsi monitoring ini:
+
+@only_allowed
+async def show_auto_trading_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show Auto Trading monitoring menu"""
+    query = update.callback_query
+    
+    # Get current status from shared state
+    state = shared_state.get_state()
+    balance = state.get('balance', {'total': 0, 'available': 0, 'unrealized_pnl': 0})
+    is_running = state.get('is_running', False)
+    stats = state.get('stats', {})
+    
+    status_emoji = "🟢" if is_running else "🔴"
+    status_text = "RUNNING" if is_running else "STOPPED"
+    
+    menu_text = f"""
+🤖 <b>AUTO TRADING MONITOR</b>
+
+<b>Status: {status_emoji} {status_text}</b>
+
+💰 <b>Balance:</b>
+- Total: ${balance.get('total', 0):.2f}
+- Available: ${balance.get('available', 0):.2f}
+- PnL: ${balance.get('unrealized_pnl', 0):.2f}
+
+📊 <b>Stats:</b>
+- Total Trades: {stats.get('total_trades', 0)}
+- Win: {stats.get('winning_trades', 0)} | Loss: {stats.get('losing_trades', 0)}
+- Profit: ${stats.get('total_profit', 0):.2f}
+- Loss: ${stats.get('total_loss', 0):.2f}
+
+⏰ Last Update: {state.get('last_update', 'N/A')}
+
+<i>💡 Auto trading berjalan di terminal VPS</i>
+"""
+    
+    keyboard = [
+        [
+            InlineKeyboardButton("📊 Positions", callback_data="monitor_positions"),
+            InlineKeyboardButton("📜 Trade Log", callback_data="monitor_log")
+        ],
+        [
+            InlineKeyboardButton("🔄 Refresh", callback_data="mode_auto"),
+            InlineKeyboardButton("📈 Performance", callback_data="monitor_performance")
+        ],
+        [
+            InlineKeyboardButton("⚠️ Errors", callback_data="monitor_errors"),
+            InlineKeyboardButton("🔙 Back", callback_data="back_to_start")
+        ]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        menu_text,
+        parse_mode="HTML",
+        reply_markup=reply_markup
+    )
+    
+    return SELECTING_MODE
+
+@only_allowed
+async def handle_monitor_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle monitoring actions"""
+    query = update.callback_query
+    await query.answer()
+    
+    action = query.data.split("_")[1]
+    state = shared_state.get_state()
+    
+    if action == "positions":
+        positions = state.get('open_positions', [])
+        
+        if not positions:
+            text = "📊 <b>Open Positions</b>\n\nNo open positions."
+        else:
+            text = "📊 <b>Open Positions</b>\n\n"
+            for pos in positions:
+                pnl_emoji = "🟢" if pos.get('unrealized_pnl', 0) > 0 else "🔴"
+                text += f"""
+<b>{pos['symbol']}</b>
+Side: {pos['side']}
+Entry: ${pos['entry_price']:.4f}
+Mark: ${pos['mark_price']:.4f}
+PnL: {pnl_emoji} ${pos['unrealized_pnl']:.2f}
+Leverage: {pos['leverage']}x
+━━━━━━━━━━━━━━━
+"""
+        
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mode_auto")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=reply_markup)
+        return SELECTING_MODE
+    
+    elif action == "log":
+        trades = state.get('trade_log', [])
+        
+        if not trades:
+            text = "📜 <b>Trade Log</b>\n\nNo trades yet."
+        else:
+            text = "📜 <b>Trade Log (Last 10)</b>\n\n"
+            for trade in list(reversed(trades))[-10:]:
+                status_emoji = "🟢" if trade.get('status') == 'CLOSED' else "🔵"
+                text += f"""
+{status_emoji} <b>{trade['symbol']}</b> - {trade['side']}
+Entry: ${trade['entry_price']:.4f}
+TP: ${trade['tp_price']:.4f}
+SL: ${trade['sl_price']:.4f}
+Size: ${trade['position_size']:.2f}
+Confidence: {trade['confidence']}%
+Time: {trade['timestamp']}
+━━━━━━━━━━━━━━━
+"""
+        
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mode_auto")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=reply_markup)
+        return SELECTING_MODE
+    
+    elif action == "performance":
+        stats = state.get('stats', {})
+        balance = state.get('balance', {})
+        
+        total_trades = stats.get('total_trades', 0)
+        wins = stats.get('winning_trades', 0)
+        losses = stats.get('losing_trades', 0)
+        win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
+        
+        total_profit = stats.get('total_profit', 0)
+        total_loss = stats.get('total_loss', 0)
+        net_profit = total_profit - total_loss
+        
+        text = f"""
+📈 <b>PERFORMANCE REPORT</b>
+
+💰 <b>Balance:</b>
+Total: ${balance.get('total', 0):.2f}
+Available: ${balance.get('available', 0):.2f}
+
+📊 <b>Trading Stats:</b>
+Total Trades: {total_trades}
+Wins: {wins} ({win_rate:.1f}%)
+Losses: {losses}
+
+💵 <b>P&L:</b>
+Profit: ${total_profit:.2f}
+Loss: ${total_loss:.2f}
+Net: ${net_profit:.2f}
+
+⏰ Started: {state.get('started_at', 'N/A')}
+"""
+        
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mode_auto")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=reply_markup)
+        return SELECTING_MODE
+    
+    elif action == "errors":
+        errors = state.get('errors', [])
+        
+        if not errors:
+            text = "⚠️ <b>Error Log</b>\n\nNo errors."
+        else:
+            text = "⚠️ <b>Error Log (Last 10)</b>\n\n"
+            for error in list(reversed(errors))[-10:]:
+                text += f"""
+🔴 {error['timestamp']}
+{error['message']}
+━━━━━━━━━━━━━━━
+"""
+        
+        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mode_auto")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=reply_markup)
+        return SELECTING_MODE
+
+# Update button_handler, tambahkan:
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "back_to_start":
+        return await start(update, context)
+    elif query.data == "help":
+        return await help_command(update, context)
+    elif query.data == "mode_auto":
+        return await show_auto_trading_menu(update, context)
+    elif query.data.startswith("monitor_"):
+        return await handle_monitor_actions(update, context)
+    elif query.data.startswith("mode_"):
+        return await handle_mode_selection(update, context)
+    elif query.data.startswith("token_"):
+        return await handle_token_selection(update, context)
+    elif query.data.startswith("strategy_"):
+        return await handle_strategy_selection(update, context)
+
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
