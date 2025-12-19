@@ -23,6 +23,238 @@ shared_state = SharedState()
 SELECTING_MODE, SELECTING_TOKEN, SELECTING_STRATEGY = range(3)
 
 @only_allowed
+async def handle_execute_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Confirm and execute the futures order with TP/SL"""
+    query = update.callback_query
+    await query.answer()
+    
+    analysis = context.user_data.get("analysis")
+    if not analysis:
+        await query.answer("❌ Data tidak ditemukan!", show_alert=True)
+        return await start(update, context)
+    
+    await query.edit_message_text(
+        "⏳ <b>Memasang posisi...</b>\n\nMohon tunggu...",
+        parse_mode="HTML"
+    )
+    
+    try:
+        from binance_futures import BinanceFuturesTrader
+        import re
+        
+        futures_trader = BinanceFuturesTrader()
+        
+        # Parse AI response for trade details
+        ai_result = analysis['ai_result']
+        current_price = analysis['current_price']
+        
+        # Detect LONG/SHORT
+        if 'LONG' in ai_result.upper():
+            side = 'BUY'
+        elif 'SHORT' in ai_result.upper():
+            side = 'SELL'
+        else:
+            await query.edit_message_text(
+                "❌ <b>Gagal!</b>\n\nAI menyarankan WAIT, tidak ada posisi yang bisa dipasang.",
+                parse_mode="HTML"
+            )
+            return SELECTING_MODE
+        
+        # Extract Entry Price
+        entry_match = re.search(r'Entry Range.*?\$?([\d.,]+)\s*-\s*\$?([\d.,]+)', ai_result, re.IGNORECASE)
+        if entry_match:
+            entry_low = float(entry_match.group(1).replace(',', ''))
+            entry_high = float(entry_match.group(2).replace(',', ''))
+            entry_price = (entry_low + entry_high) / 2
+        else:
+            entry_price = current_price * (0.998 if side == 'BUY' else 1.002)
+        
+        # Extract TP (Take Profit)
+        tp_pattern = r'TP[123].*?\$?([\d.,]+)'
+        tp_matches = re.findall(tp_pattern, ai_result, re.IGNORECASE)
+        if tp_matches and len(tp_matches) >= 2:
+            tp_price = float(tp_matches[1].replace(',', ''))  # Use TP2
+        else:
+            # Fallback: 3% profit
+            tp_price = entry_price * (1.03 if side == 'BUY' else 0.97)
+        
+        # Extract SL (Stop Loss)
+        sl_match = re.search(r'Stop Loss.*?\$?([\d.,]+)', ai_result, re.IGNORECASE)
+        if sl_match:
+            sl_price = float(sl_match.group(1).replace(',', ''))
+        else:
+            # Fallback: 2% stop loss
+            sl_price = entry_price * (0.98 if side == 'BUY' else 1.02)
+        
+        # Get balance
+        balance = futures_trader.get_futures_balance()
+        if not balance:
+            raise Exception("Gagal mendapatkan balance")
+        
+        # Calculate position size (15% of available balance)
+        position_size = balance['availableBalance'] * 0.15
+        
+        # Calculate quantity
+        quantity = futures_trader.calculate_quantity(
+            analysis['symbol'],
+            entry_price,
+            position_size
+        )
+        
+        if not quantity:
+            raise Exception("Gagal menghitung quantity. Mungkin balance tidak cukup.")
+        
+        # Place order with TP/SL (leverage 10x untuk manual)
+        result = futures_trader.place_futures_order(
+            symbol=analysis['symbol'],
+            side=side,
+            quantity=quantity,
+            entry_price=entry_price,
+            tp_price=tp_price,
+            sl_price=sl_price,
+            leverage=10
+        )
+        
+        if result['success']:
+            # Calculate potential profit/loss
+            if side == 'BUY':
+                potential_profit_pct = ((tp_price - entry_price) / entry_price) * 100
+                potential_loss_pct = ((entry_price - sl_price) / entry_price) * 100
+            else:
+                potential_profit_pct = ((entry_price - tp_price) / entry_price) * 100
+                potential_loss_pct = ((sl_price - entry_price) / entry_price) * 100
+            
+            risk_reward = potential_profit_pct / potential_loss_pct if potential_loss_pct > 0 else 0
+            
+            success_msg = f"""
+✅ <b>POSISI BERHASIL DIPASANG!</b>
+
+📊 <b>Detail Order:</b>
+Symbol: {analysis['symbol']}
+Side: {side} ({"LONG" if side == 'BUY' else 'SHORT'})
+Leverage: 10x
+
+💰 <b>Prices:</b>
+Entry: ${entry_price:.4f}
+TP: ${tp_price:.4f} (+{potential_profit_pct:.2f}%)
+SL: ${sl_price:.4f} (-{potential_loss_pct:.2f}%)
+
+📦 <b>Position:</b>
+Quantity: {quantity}
+Size: ${position_size:.2f}
+
+📈 <b>Risk/Reward:</b>
+Ratio: 1:{risk_reward:.2f}
+Max Profit: ${position_size * (potential_profit_pct/100) * 10:.2f}
+Max Loss: ${position_size * (potential_loss_pct/100) * 10:.2f}
+
+🎯 <b>Order IDs:</b>
+Entry: {result['entry_order']['orderId']}
+TP: {result['tp_order']['orderId']}
+SL: {result['sl_order']['orderId']}
+
+✅ TP dan SL sudah otomatis dipasang di exchange!
+Monitor posisi Anda di Binance Futures.
+"""
+            
+            keyboard = [
+                [InlineKeyboardButton("📊 Lihat di Binance", url=f"https://www.binance.com/en/futures/{analysis['symbol']}")],
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_to_start")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await query.edit_message_text(
+                success_msg,
+                parse_mode="HTML",
+                reply_markup=reply_markup
+            )
+        else:
+            raise Exception(result.get('error', 'Unknown error'))
+        
+    except Exception as e:
+        error_msg = f"""
+❌ <b>GAGAL MEMASANG POSISI!</b>
+
+Error: {str(e)}
+
+<b>Kemungkinan penyebab:</b>
+- Balance tidak cukup (min ~$10)
+- API key tidak memiliki akses futures
+- Symbol tidak tersedia untuk futures
+- Network/koneksi bermasalah
+- Margin tidak cukup
+
+<b>Solusi:</b>
+1. Cek balance di Binance Futures
+2. Pastikan API key punya permission futures
+3. Coba dengan leverage lebih kecil
+4. Transfer dana ke Futures wallet
+
+Silakan cek dan coba lagi.
+"""
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Coba Lagi", callback_data="execute_multi_tf")],
+            [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_to_start")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            error_msg,
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+    
+    return SELECTING_MODE
+
+
+@only_allowed
+async def handle_execute_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel order execution"""
+    query = update.callback_query
+    await query.answer("❌ Dibatalkan", show_alert=True)
+    return await start(update, context)
+
+
+@only_allowed  
+async def handle_execute_futures(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Execute futures order (untuk single TF analysis)"""
+    query = update.callback_query
+    await query.answer()
+    
+    analysis = context.user_data.get("analysis")
+    if not analysis:
+        await query.answer("❌ Data analisis tidak ditemukan!", show_alert=True)
+        return await start(update, context)
+    
+    await query.edit_message_text(
+        f"""
+📋 <b>KONFIRMASI FUTURES ORDER</b>
+
+Symbol: {analysis['symbol']}
+Timeframe: {analysis['timeframe']}
+Mode: FUTURES
+
+⚠️ <b>PERINGATAN:</b>
+- Order akan langsung dieksekusi ke Binance
+- TP dan SL akan otomatis dipasang
+- Leverage: 10x (fixed untuk manual)
+- Position size: 15% dari balance
+
+<b>Lanjutkan?</b>
+""",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ YA, PASANG", callback_data="execute_confirm"),
+                InlineKeyboardButton("❌ BATAL", callback_data="execute_cancel")
+            ]
+        ])
+    )
+    
+    return SELECTING_MODE
+
+@only_allowed
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handler untuk command /start dengan menu SPOT, FUTURES & AUTO TRADING"""
     keyboard = [
