@@ -187,21 +187,25 @@ async def handle_execute_confirm(update: Update, context: ContextTypes.DEFAULT_T
             sl_price = entry_price * (0.98 if side == 'BUY' else 1.02)
             
             
-        # === FIX: Normalize TP/SL direction based on side ===
-if side == "SELL":
-    # SHORT: TP harus di bawah entry, SL di atas
-    if tp_price >= entry_price:
-        tp_price = entry_price * 0.97  # fallback aman 3%
-    if sl_price <= entry_price:
-        sl_price = entry_price * 1.02  # fallback aman 2%
+# === FIX: Normalize TP/SL direction based on side ===
+        if side == "SELL":
+            # SHORT: TP harus di bawah entry, SL di atas
+            if tp_price >= entry_price:
+                tp_price = entry_price * 0.97  # fallback aman 3%
+            if sl_price <= entry_price:
+                sl_price = entry_price * 1.02  # fallback aman 2%
 
-else:  # BUY / LONG
-    # LONG: TP harus di atas entry, SL di bawah
-    if tp_price <= entry_price:
-        tp_price = entry_price * 1.03
-    if sl_price >= entry_price:
-        sl_price = entry_price * 0.98
-        is_valid, error_msg = validate_price_levels_util(entry_price, tp_price, sl_price, side)
+        else:  # BUY / LONG
+            # LONG: TP harus di atas entry, SL di bawah
+            if tp_price <= entry_price:
+                tp_price = entry_price * 1.03
+            if sl_price >= entry_price:
+                sl_price = entry_price * 0.98
+
+        # === VALIDATE PRICE LEVELS (DI LUAR IF) ===
+        is_valid, error_msg = validate_price_levels_util(
+            entry_price, tp_price, sl_price, side
+        )
         if not is_valid:
             raise Exception(f"Invalid price levels: {error_msg}")
 
