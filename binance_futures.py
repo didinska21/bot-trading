@@ -37,10 +37,9 @@ class BinanceFuturesTrader:
         for asset in account["assets"]:
             if asset["asset"] == "USDT":
                 balance_data = {
-                    # ✅ FIXED: Consistent key names
                     "balance": float(asset["walletBalance"]),
-                    "available": float(asset["availableBalance"]),  # ← KEY FIX
-                    "availableBalance": float(asset["availableBalance"]),  # ← Support both
+                    "available": float(asset["availableBalance"]),
+                    "availableBalance": float(asset["availableBalance"]),
                     "unrealized_pnl": float(asset["unrealizedProfit"]),
                     "crossWalletBalance": float(asset.get("crossWalletBalance", 0)),
                     "marginBalance": float(asset.get("marginBalance", 0)),
