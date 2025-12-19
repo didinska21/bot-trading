@@ -164,6 +164,7 @@ def format_result_for_telegram(text: str) -> str:
     """
     Format AI result untuk Telegram HTML
     Converts markdown-style formatting to HTML
+    FIXED: No more double bold tags
     """
     if not text:
         return ""
@@ -183,40 +184,52 @@ def format_result_for_telegram(text: str) -> str:
         flags=re.IGNORECASE
     )
 
-    # Main replacements for common AI output patterns
+    # ✅ STEP 1: Convert **bold** to <b>bold</b> FIRST
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    
+    # ✅ STEP 2: Convert *italic* to <i>italic</i>
+    text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
+    
+    # ✅ STEP 3: Convert __underline__ to <u>underline</u>
+    text = re.sub(r'__(.+?)__', r'<u>\1</u>', text)
+    
+    # ✅ STEP 4: Convert `code` to <code>code</code>
+    text = re.sub(r'`(.+?)`', r'<code>\1</code>', text)
+
+    # ✅ STEP 5: Now do specific replacements (no more ** to replace)
     replacements = {
+        # Signals - These are now already <b>LONG</b> etc
+        "<b>LONG</b>": "<b>🟢 LONG</b>",
+        "<b>SHORT</b>": "<b>🔴 SHORT</b>",
+        "<b>BUY</b>": "<b>🟢 BUY</b>",
+        "<b>SELL</b>": "<b>🔴 SELL</b>",
+        "<b>WAIT</b>": "<b>⏸️ WAIT</b>",
+        "<b>HOLD</b>": "<b>✋ HOLD</b>",
+        
         # Headers
-        "**FUTURES**": "<b>📊 REKOMENDASI SETUP FUTURES</b>",
-        "**SPOT**": "<b>💼 REKOMENDASI SETUP SPOT</b>",
-        "**Catatan**": "<b>📝 CATATAN TAMBAHAN</b>",
-        "**Note**": "<b>📝 CATATAN TAMBAHAN</b>",
+        "<b>FUTURES</b>": "<b>📊 REKOMENDASI SETUP FUTURES</b>",
+        "<b>SPOT</b>": "<b>💼 REKOMENDASI SETUP SPOT</b>",
+        "<b>Catatan</b>": "<b>📝 CATATAN TAMBAHAN</b>",
+        "<b>Note</b>": "<b>📝 CATATAN TAMBAHAN</b>",
         
         # Metrics
-        "**Risk Reward Ratio**": "<b>📈 RISK REWARD RATIO</b>",
-        "**Confidence Level**": "<b>🔐 CONFIDENCE LEVEL</b>",
-        "**Win Rate**": "<b>🎯 WIN RATE</b>",
-        "**Risk Level**": "<b>⚠️ RISK LEVEL</b>",
+        "<b>Risk Reward Ratio</b>": "<b>📈 RISK REWARD RATIO</b>",
+        "<b>Confidence Level</b>": "<b>🔍 CONFIDENCE LEVEL</b>",
+        "<b>Win Rate</b>": "<b>🎯 WIN RATE</b>",
+        "<b>Risk Level</b>": "<b>⚠️ RISK LEVEL</b>",
         
         # Signals
-        "**Sinyal Aksi**": "<b>🔔 SINYAL AKSI</b>",
-        "**Trading Signal**": "<b>🔔 SINYAL TRADING</b>",
-        "**Recommendation**": "<b>💡 REKOMENDASI</b>",
+        "<b>Sinyal Aksi</b>": "<b>🔔 SINYAL AKSI</b>",
+        "<b>Trading Signal</b>": "<b>🔔 SINYAL TRADING</b>",
+        "<b>Recommendation</b>": "<b>💡 REKOMENDASI</b>",
         
         # Analysis sections
-        "**Analisis tren pasar**": "<b><u>📊 ANALISIS TREN PASAR</u></b>",
-        "**Market Analysis**": "<b><u>📊 ANALISIS PASAR</u></b>",
-        "**Technical Analysis**": "<b><u>🔍 ANALISIS TEKNIKAL</u></b>",
-        "**Fundamental Analysis**": "<b><u>📰 ANALISIS FUNDAMENTAL</u></b>",
+        "<b>Analisis tren pasar</b>": "<b><u>📊 ANALISIS TREN PASAR</u></b>",
+        "<b>Market Analysis</b>": "<b><u>📊 ANALISIS PASAR</u></b>",
+        "<b>Technical Analysis</b>": "<b><u>🔍 ANALISIS TEKNIKAL</u></b>",
+        "<b>Fundamental Analysis</b>": "<b><u>📰 ANALISIS FUNDAMENTAL</u></b>",
         
-        # Actions
-        "**LONG**": "<b>🟢 LONG</b>",
-        "**SHORT**": "<b>🔴 SHORT</b>",
-        "**BUY**": "<b>🟢 BUY</b>",
-        "**SELL**": "<b>🔴 SELL</b>",
-        "**WAIT**": "<b>⏸️ WAIT</b>",
-        "**HOLD**": "<b>✋ HOLD</b>",
-        
-        # Price levels
+        # Price levels - Add emoji WITHOUT bold wrapper
         "Entry Range": "💰 <b>Entry Range</b>",
         "Entry Price": "💰 <b>Entry Price</b>",
         "Take Profit": "🎯 <b>Take Profit</b>",
@@ -227,23 +240,58 @@ def format_result_for_telegram(text: str) -> str:
     # Apply all replacements
     for old, new in replacements.items():
         text = text.replace(old, new)
-
-    # Convert remaining **bold** to <b>bold</b>
-    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-    
-    # Convert *italic* to <i>italic</i>
-    text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
-    
-    # Convert __underline__ to <u>underline</u>
-    text = re.sub(r'__(.+?)__', r'<u>\1</u>', text)
-    
-    # Convert `code` to <code>code</code>
-    text = re.sub(r'`(.+?)`', r'<code>\1</code>', text)
     
     # Add line breaks for better readability
     text = text.replace("\n\n", "\n━━━━━━━━━━━━━━━\n")
 
     return text
+
+
+# ============================================================
+# ========================= TESTING ==========================
+# ============================================================
+
+if __name__ == "__main__":
+    """Test the fixed formatting"""
+    
+    print("="*60)
+    print("TESTING FIXED FORMAT FUNCTION")
+    print("="*60)
+    
+    # Test case 1: Basic formatting
+    print("\n1. Basic Bold/Italic/Code:")
+    sample1 = "This is **bold**, *italic*, and `code`"
+    print(f"   Input:  {sample1}")
+    print(f"   Output: {format_result_for_telegram(sample1)}")
+    
+    # Test case 2: Trading signals
+    print("\n2. Trading Signals:")
+    sample2 = "**LONG** at Entry Range: $100-$105\nTake Profit: $120\nStop Loss: $95"
+    print(f"   Input:  {sample2}")
+    print(f"   Output: {format_result_for_telegram(sample2)}")
+    
+    # Test case 3: Multiple signals
+    print("\n3. Multiple Signals:")
+    sample3 = """
+**LONG** position recommended
+Entry Range: $50000-$51000
+Take Profit: $55000
+Stop Loss: $48000
+**Risk Reward Ratio**: 1:2.5
+**Confidence Level**: High
+"""
+    print(f"   Input:  {sample3.strip()}")
+    print(f"   Output: {format_result_for_telegram(sample3)}")
+    
+    # Test case 4: SHORT signal
+    print("\n4. SHORT Signal:")
+    sample4 = "**SHORT** at Entry Price: $100\nTake Profit: $90\nStop Loss: $105"
+    print(f"   Input:  {sample4}")
+    print(f"   Output: {format_result_for_telegram(sample4)}")
+    
+    print("\n" + "="*60)
+    print("✅ All formatting tests completed!")
+    print("="*60)
 
 
 def clean_ai_response(text: str) -> str:
