@@ -356,67 +356,6 @@ Silakan cek balance dan coba lagi.
 
     return SELECTING_MODE
 
-
-@only_allowed
-async def handle_execute_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancel futures order execution"""
-    query = update.callback_query
-    user = update.effective_user
-    
-    await query.answer("❌ Dibatalkan", show_alert=True)
-    log_user_action(user, "EXECUTE_CANCELLED", "")
-    
-    return await start(update, context)
-
-
-@only_allowed
-async def handle_execute_futures(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show confirmation before executing futures order"""
-    query = update.callback_query
-    await query.answer()
-    
-    user = update.effective_user
-
-    analysis = context.user_data.get("analysis")
-    if not analysis:
-        await query.answer("❌ Data analisis tidak ditemukan! Silakan analisis ulang.", show_alert=True)
-        return await start(update, context)
-
-    log_user_action(user, "EXECUTE_CONFIRM_SCREEN", f"- {analysis['symbol']}")
-
-    await safe_edit_message(
-        query,
-        f"""
-📋 <b>KONFIRMASI FUTURES ORDER</b>
-
-<b>Trading Details:</b>
-Symbol: {analysis['symbol']}
-Timeframe: {analysis['timeframe']}
-Mode: FUTURES
-
-<b>Risk Settings:</b>
-• Leverage: 10x
-• Position Size: 15% dari available balance
-• Auto TP & SL berdasarkan analisis AI
-
-⚠️ <b>Peringatan:</b>
-Trading futures memiliki risiko tinggi karena menggunakan leverage. 
-Pastikan Anda memahami risikonya dan hanya gunakan dana yang 
-siap untuk hilang.
-
-<b>Lanjutkan eksekusi order?</b>
-""",
-        reply_markup=InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("✅ YA, PASANG ORDER", callback_data="execute_confirm"),
-                InlineKeyboardButton("❌ BATAL", callback_data="execute_cancel")
-            ]
-        ])
-    )
-
-    return SELECTING_MODE
-
-
 # ==================== END OF PART 1 ====================
 # LANJUT KE PART 2: Main Menu, Mode Selection, Token Selection
 # main.py - COMPLETE UPDATED VERSION (PART 2/3)
