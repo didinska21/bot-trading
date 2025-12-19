@@ -99,7 +99,7 @@ async def safe_edit_message(query, text, parse_mode="HTML", reply_markup=None):
 
 @only_allowed
 async def handle_execute_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Execute futures order after confirmation"""
+    """Execute futures order after confirmation - FIXED VERSION"""
     query = update.callback_query
     await query.answer()
     
@@ -155,7 +155,7 @@ async def handle_execute_confirm(update: Update, context: ContextTypes.DEFAULT_T
             log_user_action(user, "EXECUTE_SKIPPED", "- AI suggests WAIT")
             return SELECTING_MODE
 
-        # Parse entry price
+        # ✅ FIXED: Parse entry price with better logic
         entry_match = re.search(
             r'Entry\s*(?:Range|Price)?.*?\$?\s*([\d.,]+)\s*(?:-|to)?\s*\$?\s*([\d.,]+)?',
             ai_result,
@@ -169,57 +169,71 @@ async def handle_execute_confirm(update: Update, context: ContextTypes.DEFAULT_T
             # Fallback: use current price with small buffer
             entry_price = current_price * (0.998 if side == 'BUY' else 1.002)
 
-        # Parse Take Profit
-        tp_matches = re.findall(r'TP\s*\d*.*?\$?\s*([\d.,]+)', ai_result, re.IGNORECASE)
+        # ✅ FIXED: Parse Take Profit - Better regex
+        tp_matches = re.findall(
+            r'(?:TP|Take\s*Profit)\s*\d*\s*[:=]?\s*\$?\s*([\d.,]+)', 
+            ai_result, 
+            re.IGNORECASE
+        )
+        
         if tp_matches and len(tp_matches) >= 1:
             # Use TP2 if available, otherwise TP1
-            tp_price = float(tp_matches[1].replace(',', '')) if len(tp_matches) >= 2 else float(tp_matches[0].replace(',', ''))
+            tp_raw = tp_matches[1] if len(tp_matches) >= 2 else tp_matches[0]
+            tp_price = float(tp_raw.replace(',', ''))
         else:
-            # Fallback: 3% profit target
-            tp_price = entry_price * (1.03 if side == 'BUY' else 0.97)
+            # ✅ FIXED: Fallback dengan logika yang benar untuk SHORT
+            if side == 'BUY':  # LONG
+                tp_price = entry_price * 1.03  # TP 3% di atas entry
+            else:  # SHORT
+                tp_price = entry_price * 0.97  # TP 3% di bawah entry
 
-        # Parse Stop Loss
-        sl_match = re.search(r'(?:Stop\s*Loss|SL).*?\$?\s*([\d.,]+)', ai_result, re.IGNORECASE)
+        # ✅ FIXED: Parse Stop Loss - Better regex
+        sl_match = re.search(
+            r'(?:Stop\s*Loss|SL)\s*[:=]?\s*\$?\s*([\d.,]+)', 
+            ai_result, 
+            re.IGNORECASE
+        )
+        
         if sl_match:
             sl_price = float(sl_match.group(1).replace(',', ''))
         else:
-            # Fallback: 2% stop loss
-            sl_price = entry_price * (0.98 if side == 'BUY' else 1.02)
-            
-            
-# === FIX: Normalize TP/SL direction based on side ===
-        if side == "SELL":
-            # SHORT: TP harus di bawah entry, SL di atas
-            if tp_price >= entry_price:
-                tp_price = entry_price * 0.97  # fallback aman 3%
-            if sl_price <= entry_price:
-                sl_price = entry_price * 1.02  # fallback aman 2%
+            # ✅ FIXED: Fallback dengan logika yang benar untuk SHORT
+            if side == 'BUY':  # LONG
+                sl_price = entry_price * 0.98  # SL 2% di bawah entry
+            else:  # SHORT
+                sl_price = entry_price * 1.02  # SL 2% di atas entry
 
-        else:  # BUY / LONG
-            # LONG: TP harus di atas entry, SL di bawah
-            if tp_price <= entry_price:
-                tp_price = entry_price * 1.03
-            if sl_price >= entry_price:
-                sl_price = entry_price * 0.98
+        # ✅ ADDITIONAL FIX: Swap TP/SL jika masih terbalik
+        if side == 'BUY':  # LONG
+            # TP harus di atas entry, SL harus di bawah entry
+            if tp_price < entry_price or sl_price > entry_price:
+                logger.warning(f"Detected inverted TP/SL for LONG. Swapping...")
+                tp_price, sl_price = max(tp_price, sl_price), min(tp_price, sl_price)
+                tp_price = max(tp_price, entry_price * 1.01)  # Ensure TP > entry
+                sl_price = min(sl_price, entry_price * 0.99)  # Ensure SL < entry
+        else:  # SHORT
+            # TP harus di bawah entry, SL harus di atas entry
+            if tp_price > entry_price or sl_price < entry_price:
+                logger.warning(f"Detected inverted TP/SL for SHORT. Swapping...")
+                tp_price, sl_price = min(tp_price, sl_price), max(tp_price, sl_price)
+                tp_price = min(tp_price, entry_price * 0.99)  # Ensure TP < entry
+                sl_price = max(sl_price, entry_price * 1.01)  # Ensure SL > entry
 
-        # === VALIDATE PRICE LEVELS (DI LUAR IF) ===
-        is_valid, error_msg = validate_price_levels_util(
-            entry_price, tp_price, sl_price, side
-        )
+        # ✅ Validate price levels
+        is_valid, error_msg = validate_price_levels_util(entry_price, tp_price, sl_price, side)
         if not is_valid:
             raise Exception(f"Invalid price levels: {error_msg}")
 
+        # Log parsed values for debugging
+        logger.info(f"Parsed prices - Entry: ${entry_price:.2f}, TP: ${tp_price:.2f}, SL: ${sl_price:.2f}, Side: {side}")
+
         # Get balance
         balance = futures_trader.get_futures_balance()
-
-        # ✅ FIXED: Support both key names
-        available_balance = balance.get("available", balance.get("availableBalance", 0))
-
-        if not balance or available_balance <= 0:
+        if not balance or balance.get("availableBalance", 0) <= 0:
             raise Exception("Insufficient balance atau gagal mendapatkan balance")
 
         # Calculate position size (15% of available balance)
-        position_size = available_balance * 0.15
+        position_size = balance["availableBalance"] * 0.15
 
         # Calculate quantity
         quantity = futures_trader.calculate_quantity(
@@ -239,13 +253,13 @@ async def handle_execute_confirm(update: Update, context: ContextTypes.DEFAULT_T
             tp_price=tp_price,
             sl_price=sl_price,
             leverage=10,
-            order_type="MARKET"  # ⭐ Use MARKET for instant execution
+            order_type="MARKET"
         )
 
         if not result.get("success"):
             raise Exception(result.get("error", "Unknown error from Binance"))
 
-        # ⭐ UPDATED: Calculate PnL using utility functions
+        # Calculate PnL using utility functions
         profit_pct = calculate_pnl_percentage(entry_price, tp_price, side)
         loss_pct = abs(calculate_pnl_percentage(entry_price, sl_price, side))
         rr = calculate_risk_reward(entry_price, tp_price, sl_price, side)
@@ -255,7 +269,7 @@ async def handle_execute_confirm(update: Update, context: ContextTypes.DEFAULT_T
         max_profit = position_size * (profit_pct / 100) * leverage
         max_loss = position_size * (loss_pct / 100) * leverage
 
-        # ⭐ UPDATED: Better formatted success message
+        # Success message
         success_msg = f"""
 ✅ <b>POSISI BERHASIL DIPASANG!</b>
 
@@ -308,7 +322,6 @@ Monitor posisi Anda secara berkala di Binance Futures.
     except Exception as e:
         logger.error(f"Execute futures error: {e}")
         
-        # ⭐ UPDATED: Better error formatting
         error_display = format_error_message(e)
         
         await safe_edit_message(
@@ -317,6 +330,13 @@ Monitor posisi Anda secara berkala di Binance Futures.
 ❌ <b>GAGAL MEMASANG POSISI!</b>
 
 {error_display}
+
+<b>Debug Info:</b>
+• Symbol: {analysis.get('symbol', 'N/A')}
+• Side: {side if 'side' in locals() else 'N/A'}
+• Entry: ${entry_price:.2f if 'entry_price' in locals() else 'N/A'}
+• TP: ${tp_price:.2f if 'tp_price' in locals() else 'N/A'}
+• SL: ${sl_price:.2f if 'sl_price' in locals() else 'N/A'}
 
 <b>Kemungkinan penyebab:</b>
 • Balance tidak cukup
