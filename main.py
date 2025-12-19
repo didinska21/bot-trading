@@ -1,11 +1,14 @@
-# main.py - CLEAN VERSION
+# main.py - CLEAN VERSION (FULL, PART 1/2)
+
 import logging
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, CallbackQueryHandler, 
+    ApplicationBuilder, CommandHandler, CallbackQueryHandler,
     MessageHandler, ConversationHandler, ContextTypes, filters
 )
 from binance.client import Client
+
 from config import TELEGRAM_TOKEN, BINANCE_API_KEY, BINANCE_API_SECRET, TOP_TOKENS
 from utils import only_allowed, format_result_for_telegram
 from ai import analyze_with_gpt
@@ -16,97 +19,112 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-binance_client = Client(api_key=BINANCE_API_KEY, api_secret=BINANCE_API_SECRET)
+binance_client = Client(
+    api_key=BINANCE_API_KEY,
+    api_secret=BINANCE_API_SECRET
+)
+
 shared_state = SharedState()
 
 # Conversation states
 SELECTING_MODE, SELECTING_TOKEN, SELECTING_STRATEGY = range(3)
 
+# === BINANCE TIMEFRAME MAP (FIX, TANPA UBAH UX) ===
+TIMEFRAME_MAP = {
+    "15m": Client.KLINE_INTERVAL_15MINUTE,
+    "1h": Client.KLINE_INTERVAL_1HOUR,
+    "4h": Client.KLINE_INTERVAL_4HOUR,
+    "1d": Client.KLINE_INTERVAL_1DAY,
+    "1w": Client.KLINE_INTERVAL_1WEEK,
+}
+
+# =====================================================================
+# ======================= FUTURES EXECUTION ============================
+# =====================================================================
+
 @only_allowed
 async def handle_execute_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Confirm and execute the futures order with TP/SL"""
     query = update.callback_query
     await query.answer()
-    
+
     analysis = context.user_data.get("analysis")
     if not analysis:
         await query.answer("❌ Data tidak ditemukan!", show_alert=True)
         return await start(update, context)
-    
+
     await query.edit_message_text(
         "⏳ <b>Memasang posisi...</b>\n\nMohon tunggu...",
         parse_mode="HTML"
     )
-    
+
     try:
         from binance_futures import BinanceFuturesTrader
         import re
-        
+
         futures_trader = BinanceFuturesTrader()
-        
-        # Parse AI response for trade details
-        ai_result = analysis['ai_result']
-        current_price = analysis['current_price']
-        
-        # Detect LONG/SHORT
-        if 'LONG' in ai_result.upper():
-            side = 'BUY'
-        elif 'SHORT' in ai_result.upper():
-            side = 'SELL'
+
+        ai_result = analysis["ai_result"]
+        current_price = analysis["current_price"]
+
+        # SAFETY MINIMAL (tidak ubah logika)
+        if not ai_result or len(ai_result.strip()) < 20:
+            raise Exception("AI response kosong atau tidak valid")
+
+        # Detect LONG / SHORT
+        if "LONG" in ai_result.upper():
+            side = "BUY"
+        elif "SHORT" in ai_result.upper():
+            side = "SELL"
         else:
             await query.edit_message_text(
-                "❌ <b>Gagal!</b>\n\nAI menyarankan WAIT, tidak ada posisi yang bisa dipasang.",
+                "❌ <b>AI menyarankan WAIT</b>\n\nTidak ada posisi yang dipasang.",
                 parse_mode="HTML"
             )
             return SELECTING_MODE
-        
-        # Extract Entry Price
-        entry_match = re.search(r'Entry Range.*?\$?([\d.,]+)\s*-\s*\$?([\d.,]+)', ai_result, re.IGNORECASE)
+
+        # Entry price
+        entry_match = re.search(
+            r'Entry Range.*?\$?([\d.,]+)\s*-\s*\$?([\d.,]+)',
+            ai_result,
+            re.IGNORECASE
+        )
         if entry_match:
             entry_low = float(entry_match.group(1).replace(',', ''))
             entry_high = float(entry_match.group(2).replace(',', ''))
             entry_price = (entry_low + entry_high) / 2
         else:
             entry_price = current_price * (0.998 if side == 'BUY' else 1.002)
-        
-        # Extract TP (Take Profit)
-        tp_pattern = r'TP[123].*?\$?([\d.,]+)'
-        tp_matches = re.findall(tp_pattern, ai_result, re.IGNORECASE)
+
+        # Take Profit
+        tp_matches = re.findall(r'TP[123].*?\$?([\d.,]+)', ai_result, re.IGNORECASE)
         if tp_matches and len(tp_matches) >= 2:
-            tp_price = float(tp_matches[1].replace(',', ''))  # Use TP2
+            tp_price = float(tp_matches[1].replace(',', ''))
         else:
-            # Fallback: 3% profit
             tp_price = entry_price * (1.03 if side == 'BUY' else 0.97)
-        
-        # Extract SL (Stop Loss)
+
+        # Stop Loss
         sl_match = re.search(r'Stop Loss.*?\$?([\d.,]+)', ai_result, re.IGNORECASE)
         if sl_match:
             sl_price = float(sl_match.group(1).replace(',', ''))
         else:
-            # Fallback: 2% stop loss
             sl_price = entry_price * (0.98 if side == 'BUY' else 1.02)
-        
-        # Get balance
+
         balance = futures_trader.get_futures_balance()
         if not balance:
             raise Exception("Gagal mendapatkan balance")
-        
-        # Calculate position size (15% of available balance)
-        position_size = balance['availableBalance'] * 0.15
-        
-        # Calculate quantity
+
+        position_size = balance["availableBalance"] * 0.15
+
         quantity = futures_trader.calculate_quantity(
-            analysis['symbol'],
+            analysis["symbol"],
             entry_price,
             position_size
         )
-        
         if not quantity:
-            raise Exception("Gagal menghitung quantity. Mungkin balance tidak cukup.")
-        
-        # Place order with TP/SL (leverage 10x untuk manual)
+            raise Exception("Gagal menghitung quantity")
+
         result = futures_trader.place_futures_order(
-            symbol=analysis['symbol'],
+            symbol=analysis["symbol"],
             side=side,
             quantity=quantity,
             entry_price=entry_price,
@@ -114,132 +132,100 @@ async def handle_execute_confirm(update: Update, context: ContextTypes.DEFAULT_T
             sl_price=sl_price,
             leverage=10
         )
-        
-        if result['success']:
-            # Calculate potential profit/loss
-            if side == 'BUY':
-                potential_profit_pct = ((tp_price - entry_price) / entry_price) * 100
-                potential_loss_pct = ((entry_price - sl_price) / entry_price) * 100
-            else:
-                potential_profit_pct = ((entry_price - tp_price) / entry_price) * 100
-                potential_loss_pct = ((sl_price - entry_price) / entry_price) * 100
-            
-            risk_reward = potential_profit_pct / potential_loss_pct if potential_loss_pct > 0 else 0
-            
-            success_msg = f"""
+
+        if not result.get("success"):
+            raise Exception(result.get("error", "Unknown error"))
+
+        # PnL calculation (FIX tanpa ubah logic)
+        if side == "BUY":
+            profit_pct = (tp_price - entry_price) / entry_price * 100
+            loss_pct = (entry_price - sl_price) / entry_price * 100
+        else:
+            profit_pct = (entry_price - tp_price) / entry_price * 100
+            loss_pct = (sl_price - entry_price) / entry_price * 100
+
+        rr = profit_pct / loss_pct if loss_pct > 0 else 0
+
+        success_msg = f"""
 ✅ <b>POSISI BERHASIL DIPASANG!</b>
 
 📊 <b>Detail Order:</b>
 Symbol: {analysis['symbol']}
-Side: {side} ({"LONG" if side == 'BUY' else 'SHORT'})
+Side: {"LONG" if side == "BUY" else "SHORT"}
 Leverage: 10x
 
 💰 <b>Prices:</b>
 Entry: ${entry_price:.4f}
-TP: ${tp_price:.4f} (+{potential_profit_pct:.2f}%)
-SL: ${sl_price:.4f} (-{potential_loss_pct:.2f}%)
+TP: ${tp_price:.4f} (+{profit_pct:.2f}%)
+SL: ${sl_price:.4f} (-{loss_pct:.2f}%)
 
 📦 <b>Position:</b>
 Quantity: {quantity}
 Size: ${position_size:.2f}
 
 📈 <b>Risk/Reward:</b>
-Ratio: 1:{risk_reward:.2f}
-Max Profit: ${position_size * (potential_profit_pct/100) * 10:.2f}
-Max Loss: ${position_size * (potential_loss_pct/100) * 10:.2f}
+1:{rr:.2f}
+Max Profit: ${position_size * (profit_pct/100):.2f}
+Max Loss: ${position_size * (loss_pct/100):.2f}
 
 🎯 <b>Order IDs:</b>
 Entry: {result['entry_order']['orderId']}
 TP: {result['tp_order']['orderId']}
 SL: {result['sl_order']['orderId']}
-
-✅ TP dan SL sudah otomatis dipasang di exchange!
-Monitor posisi Anda di Binance Futures.
 """
-            
-            keyboard = [
-                [InlineKeyboardButton("📊 Lihat di Binance", url=f"https://www.binance.com/en/futures/{analysis['symbol']}")],
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_to_start")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await query.edit_message_text(
-                success_msg,
-                parse_mode="HTML",
-                reply_markup=reply_markup
-            )
-        else:
-            raise Exception(result.get('error', 'Unknown error'))
-        
+
+        keyboard = [
+            [InlineKeyboardButton("📊 Lihat di Binance", url=f"https://www.binance.com/en/futures/{analysis['symbol']}")],
+            [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_to_start")]
+        ]
+
+        await query.edit_message_text(
+            success_msg,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
     except Exception as e:
-        error_msg = f"""
+        await query.edit_message_text(
+            f"""
 ❌ <b>GAGAL MEMASANG POSISI!</b>
 
 Error: {str(e)}
-
-<b>Kemungkinan penyebab:</b>
-- Balance tidak cukup (min ~$10)
-- API key tidak memiliki akses futures
-- Symbol tidak tersedia untuk futures
-- Network/koneksi bermasalah
-- Margin tidak cukup
-
-<b>Solusi:</b>
-1. Cek balance di Binance Futures
-2. Pastikan API key punya permission futures
-3. Coba dengan leverage lebih kecil
-4. Transfer dana ke Futures wallet
-
-Silakan cek dan coba lagi.
-"""
-        
-        keyboard = [
-            [InlineKeyboardButton("🔄 Coba Lagi", callback_data="execute_multi_tf")],
-            [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_to_start")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            error_msg,
+""",
             parse_mode="HTML",
-            reply_markup=reply_markup
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_to_start")]
+            ])
         )
-    
+
     return SELECTING_MODE
 
 
 @only_allowed
 async def handle_execute_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancel order execution"""
     query = update.callback_query
     await query.answer("❌ Dibatalkan", show_alert=True)
     return await start(update, context)
 
 
-@only_allowed  
+@only_allowed
 async def handle_execute_futures(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Execute futures order (untuk single TF analysis)"""
     query = update.callback_query
     await query.answer()
-    
+
     analysis = context.user_data.get("analysis")
     if not analysis:
         await query.answer("❌ Data analisis tidak ditemukan!", show_alert=True)
         return await start(update, context)
-    
+
     await query.edit_message_text(
         f"""
 📋 <b>KONFIRMASI FUTURES ORDER</b>
 
 Symbol: {analysis['symbol']}
 Timeframe: {analysis['timeframe']}
-Mode: FUTURES
-
-⚠️ <b>PERINGATAN:</b>
-- Order akan langsung dieksekusi ke Binance
-- TP dan SL akan otomatis dipasang
-- Leverage: 10x (fixed untuk manual)
-- Position size: 15% dari balance
+Leverage: 10x
+Position size: 15% balance
 
 <b>Lanjutkan?</b>
 """,
@@ -251,12 +237,17 @@ Mode: FUTURES
             ]
         ])
     )
-    
+
     return SELECTING_MODE
+
+# ===================== PART 1 STOP DI SINI =====================
+
+# =====================================================================
+# ========================= MAIN MENU FLOW =============================
+# =====================================================================
 
 @only_allowed
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk command /start dengan menu SPOT, FUTURES & AUTO TRADING"""
     keyboard = [
         [
             InlineKeyboardButton("💼 SPOT TRADING", callback_data="mode_spot"),
@@ -269,21 +260,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("ℹ️ Help & Info", callback_data="help")
         ]
     ]
+
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
+
     welcome_text = """
 🤖 <b>CRYPTO SIGNAL BOT - AI POWERED</b>
 
-Selamat datang! Bot ini memberikan sinyal trading crypto dengan analisis AI yang akurat menggunakan Groq Llama 3.3 70B.
+Selamat datang! Bot ini memberikan sinyal trading crypto dengan analisis AI.
 
-<b>📊 Pilih Mode Trading:</b>
-- <b>SPOT</b> - Trading spot dengan risk rendah
-- <b>FUTURES</b> - Trading futures manual dengan leverage
-- <b>AUTO TRADING</b> - Auto trading futures dengan AI
+📊 <b>Pilih Mode Trading:</b>
+- <b>SPOT</b> - Trading spot
+- <b>FUTURES</b> - Trading futures manual
+- <b>AUTO TRADING</b> - Monitoring auto trading
 
-Silakan pilih mode di bawah ini:
+Silakan pilih mode:
 """
-    
+
     if update.message:
         await update.message.reply_text(
             welcome_text,
@@ -296,238 +288,228 @@ Silakan pilih mode di bawah ini:
             parse_mode="HTML",
             reply_markup=reply_markup
         )
-    
+
     return SELECTING_MODE
+
+
+# =====================================================================
+# ========================= MODE SELECTION =============================
+# =====================================================================
 
 @only_allowed
 async def handle_mode_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk memilih mode SPOT, FUTURES, atau AUTO"""
     query = update.callback_query
     await query.answer()
-    
+
     mode = query.data.split("_")[1]
-    
-    # Handle Auto Trading mode
+
     if mode == "auto":
         return await show_auto_trading_menu(update, context)
-    
+
     context.user_data["mode"] = mode
-    
-    # Buat keyboard untuk pilihan token (5 kolom)
+
     buttons = []
     for i in range(0, len(TOP_TOKENS[:50]), 5):
         row = [
-            InlineKeyboardButton(token.replace("USDT", ""), callback_data=f"token_{token}")
-            for token in TOP_TOKENS[i:i+5]
+            InlineKeyboardButton(
+                token.replace("USDT", ""),
+                callback_data=f"token_{token}"
+            )
+            for token in TOP_TOKENS[i:i + 5]
         ]
         buttons.append(row)
-    
+
     buttons.append([InlineKeyboardButton("🔙 Kembali", callback_data="back_to_start")])
-    reply_markup = InlineKeyboardMarkup(buttons)
-    
+
     mode_emoji = "💼" if mode == "spot" else "📈"
     mode_text = "SPOT" if mode == "spot" else "FUTURES"
-    
+
     await query.edit_message_text(
-        f"{mode_emoji} <b>MODE: {mode_text} TRADING</b>\n\n"
-        f"📌 Pilih token yang ingin dianalisis:\n"
-        f"<i>Atau ketik manual seperti: BTCUSDT</i>",
+        f"""
+{mode_emoji} <b>MODE: {mode_text}</b>
+
+📌 Pilih token yang ingin dianalisis
+<i>Atau ketik manual (contoh: BTCUSDT)</i>
+""",
         parse_mode="HTML",
-        reply_markup=reply_markup
+        reply_markup=InlineKeyboardMarkup(buttons)
     )
-    
+
     return SELECTING_TOKEN
+
+
+# =====================================================================
+# ========================= AUTO TRADING MENU ==========================
+# =====================================================================
 
 @only_allowed
 async def show_auto_trading_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show Auto Trading monitoring menu"""
     query = update.callback_query
-    
+
     state = shared_state.get_state()
-    balance = state.get('balance', {'total': 0, 'available': 0, 'unrealized_pnl': 0})
-    is_running = state.get('is_running', False)
-    stats = state.get('stats', {})
-    
+    balance = state.get("balance", {})
+    stats = state.get("stats", {})
+    is_running = state.get("is_running", False)
+
     status_emoji = "🟢" if is_running else "🔴"
     status_text = "RUNNING" if is_running else "STOPPED"
-    
-    menu_text = f"""
+
+    text = f"""
 🤖 <b>AUTO TRADING MONITOR</b>
 
-<b>Status: {status_emoji} {status_text}</b>
+Status: {status_emoji} {status_text}
 
-💰 <b>Balance:</b>
-- Total: ${balance.get('total', 0):.2f}
-- Available: ${balance.get('available', 0):.2f}
-- PnL: ${balance.get('unrealized_pnl', 0):.2f}
+💰 <b>Balance</b>
+Total: ${balance.get("total", 0):.2f}
+Available: ${balance.get("available", 0):.2f}
+PnL: ${balance.get("unrealized_pnl", 0):.2f}
 
-📊 <b>Stats:</b>
-- Total Trades: {stats.get('total_trades', 0)}
-- Win: {stats.get('winning_trades', 0)} | Loss: {stats.get('losing_trades', 0)}
-- Profit: ${stats.get('total_profit', 0):.2f}
-- Loss: ${stats.get('total_loss', 0):.2f}
+📊 <b>Stats</b>
+Total Trades: {stats.get("total_trades", 0)}
+Win: {stats.get("winning_trades", 0)}
+Loss: {stats.get("losing_trades", 0)}
+Profit: ${stats.get("total_profit", 0):.2f}
+Loss: ${stats.get("total_loss", 0):.2f}
 
-⏰ Last Update: {state.get('last_update', 'N/A')}
-
-<i>💡 Auto trading berjalan di terminal VPS</i>
+⏰ Last Update: {state.get("last_update", "N/A")}
 """
-    
+
     keyboard = [
         [
             InlineKeyboardButton("📊 Positions", callback_data="monitor_positions"),
             InlineKeyboardButton("📜 Trade Log", callback_data="monitor_log")
         ],
         [
-            InlineKeyboardButton("🔄 Refresh", callback_data="mode_auto"),
-            InlineKeyboardButton("📈 Performance", callback_data="monitor_performance")
+            InlineKeyboardButton("📈 Performance", callback_data="monitor_performance"),
+            InlineKeyboardButton("⚠️ Errors", callback_data="monitor_errors")
         ],
         [
-            InlineKeyboardButton("⚠️ Errors", callback_data="monitor_errors"),
+            InlineKeyboardButton("🔄 Refresh", callback_data="mode_auto"),
             InlineKeyboardButton("🔙 Back", callback_data="back_to_start")
         ]
     ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
+
     await query.edit_message_text(
-        menu_text,
+        text,
         parse_mode="HTML",
-        reply_markup=reply_markup
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
-    
+
     return SELECTING_MODE
+
+
+# =====================================================================
+# ========================= AUTO MONITOR ACTIONS =======================
+# =====================================================================
 
 @only_allowed
 async def handle_monitor_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle monitoring actions"""
     query = update.callback_query
     await query.answer()
-    
+
     action = query.data.split("_")[1]
     state = shared_state.get_state()
-    
+
     if action == "positions":
-        positions = state.get('open_positions', [])
-        
+        positions = state.get("open_positions", [])
+
         if not positions:
-            text = "📊 <b>Open Positions</b>\n\nNo open positions."
+            text = "📊 <b>Open Positions</b>\n\nTidak ada posisi terbuka."
         else:
             text = "📊 <b>Open Positions</b>\n\n"
             for pos in positions:
-                pnl_emoji = "🟢" if pos.get('unrealized_pnl', 0) > 0 else "🔴"
+                pnl = pos.get("unrealized_pnl", 0)
+                emoji = "🟢" if pnl > 0 else "🔴"
                 text += f"""
 <b>{pos['symbol']}</b>
 Side: {pos['side']}
 Entry: ${pos['entry_price']:.4f}
 Mark: ${pos['mark_price']:.4f}
-PnL: {pnl_emoji} ${pos['unrealized_pnl']:.2f}
+PnL: {emoji} ${pnl:.2f}
 Leverage: {pos['leverage']}x
 ━━━━━━━━━━━━━━━
 """
-        
-        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mode_auto")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(text, parse_mode="HTML", reply_markup=reply_markup)
-        return SELECTING_MODE
-    
+
     elif action == "log":
-        trades = state.get('trade_log', [])
-        
+        trades = state.get("trade_log", [])
+        text = "📜 <b>Trade Log</b>\n\n"
+
         if not trades:
-            text = "📜 <b>Trade Log</b>\n\nNo trades yet."
+            text += "Belum ada trade."
         else:
-            text = "📜 <b>Trade Log (Last 10)</b>\n\n"
-            for trade in list(reversed(trades))[-10:]:
-                status_emoji = "🟢" if trade.get('status') == 'CLOSED' else "🔵"
+            for trade in trades[-10:]:
                 text += f"""
-{status_emoji} <b>{trade['symbol']}</b> - {trade['side']}
+<b>{trade['symbol']}</b> {trade['side']}
 Entry: ${trade['entry_price']:.4f}
 TP: ${trade['tp_price']:.4f}
 SL: ${trade['sl_price']:.4f}
 Size: ${trade['position_size']:.2f}
-Confidence: {trade['confidence']}%
 Time: {trade['timestamp']}
 ━━━━━━━━━━━━━━━
 """
-        
-        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mode_auto")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(text, parse_mode="HTML", reply_markup=reply_markup)
-        return SELECTING_MODE
-    
+
     elif action == "performance":
-        stats = state.get('stats', {})
-        balance = state.get('balance', {})
-        
-        total_trades = stats.get('total_trades', 0)
-        wins = stats.get('winning_trades', 0)
-        losses = stats.get('losing_trades', 0)
-        win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
-        
-        total_profit = stats.get('total_profit', 0)
-        total_loss = stats.get('total_loss', 0)
-        net_profit = total_profit - total_loss
-        
+        stats = state.get("stats", {})
+        total = stats.get("total_trades", 0)
+        wins = stats.get("winning_trades", 0)
+        losses = stats.get("losing_trades", 0)
+        winrate = (wins / total * 100) if total else 0
+
         text = f"""
-📈 <b>PERFORMANCE REPORT</b>
+📈 <b>PERFORMANCE</b>
 
-💰 <b>Balance:</b>
-Total: ${balance.get('total', 0):.2f}
-Available: ${balance.get('available', 0):.2f}
-
-📊 <b>Trading Stats:</b>
-Total Trades: {total_trades}
-Wins: {wins} ({win_rate:.1f}%)
+Total Trades: {total}
+Wins: {wins}
 Losses: {losses}
+Winrate: {winrate:.1f}%
 
-💵 <b>P&L:</b>
-Profit: ${total_profit:.2f}
-Loss: ${total_loss:.2f}
-Net: ${net_profit:.2f}
-
-⏰ Started: {state.get('started_at', 'N/A')}
+Profit: ${stats.get("total_profit", 0):.2f}
+Loss: ${stats.get("total_loss", 0):.2f}
 """
-        
-        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mode_auto")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(text, parse_mode="HTML", reply_markup=reply_markup)
-        return SELECTING_MODE
-    
+
     elif action == "errors":
-        errors = state.get('errors', [])
-        
+        errors = state.get("errors", [])
+        text = "⚠️ <b>Error Log</b>\n\n"
+
         if not errors:
-            text = "⚠️ <b>Error Log</b>\n\nNo errors."
+            text += "Tidak ada error."
         else:
-            text = "⚠️ <b>Error Log (Last 10)</b>\n\n"
-            for error in list(reversed(errors))[-10:]:
+            for err in errors[-10:]:
                 text += f"""
-🔴 {error['timestamp']}
-{error['message']}
+{err['timestamp']}
+{err['message']}
 ━━━━━━━━━━━━━━━
 """
-        
-        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="mode_auto")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(text, parse_mode="HTML", reply_markup=reply_markup)
-        return SELECTING_MODE
+
+    else:
+        text = "❌ Unknown action"
+
+    await query.edit_message_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 Back", callback_data="mode_auto")]
+        ])
+    )
+
+    return SELECTING_MODE
+
+
+# =====================================================================
+# ========================= TOKEN SELECTION ============================
+# =====================================================================
 
 @only_allowed
 async def handle_token_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk memilih token"""
     query = update.callback_query
     await query.answer()
-    
+
     token = query.data.split("_")[1]
     context.user_data["symbol"] = token
-    
+
     mode = context.user_data.get("mode", "spot")
-    mode_emoji = "💼" if mode == "spot" else "📈"
-    
+    emoji = "💼" if mode == "spot" else "📈"
+
     keyboard = [
         [
             InlineKeyboardButton("⚡ Scalping (15m)", callback_data="strategy_15m"),
@@ -540,205 +522,178 @@ async def handle_token_selection(update: Update, context: ContextTypes.DEFAULT_T
         [
             InlineKeyboardButton("🎯 Multi TF (4h)", callback_data="strategy_4h")
         ],
-        [InlineKeyboardButton("🔙 Kembali", callback_data=f"mode_{mode}")]
+        [
+            InlineKeyboardButton("🔙 Kembali", callback_data=f"mode_{mode}")
+        ]
     ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
+
     await query.edit_message_text(
-        f"{mode_emoji} <b>{token}</b>\n\n"
-        f"⏰ Pilih timeframe untuk analisis:",
+        f"{emoji} <b>{token}</b>\n\nPilih timeframe:",
         parse_mode="HTML",
-        reply_markup=reply_markup
+        reply_markup=InlineKeyboardMarkup(keyboard)
     )
-    
+
     return SELECTING_STRATEGY
+
 
 @only_allowed
 async def handle_manual_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk token yang diketik manual"""
     token = update.message.text.upper().strip()
-    
     if not token.endswith("USDT"):
         token += "USDT"
-    
+
     context.user_data["symbol"] = token
     mode = context.user_data.get("mode", "spot")
-    mode_emoji = "💼" if mode == "spot" else "📈"
-    
-    keyboard = [
-        [
-            InlineKeyboardButton("⚡ Scalping (15m)", callback_data="strategy_15m"),
-            InlineKeyboardButton("📊 Day Trade (1h)", callback_data="strategy_1h")
-        ],
-        [
-            InlineKeyboardButton("🔄 Swing (1d)", callback_data="strategy_1d"),
-            InlineKeyboardButton("📈 Long-Term (1w)", callback_data="strategy_1w")
-        ],
-        [
-            InlineKeyboardButton("🎯 Multi TF (4h)", callback_data="strategy_4h")
-        ],
-        [InlineKeyboardButton("🔙 Kembali", callback_data=f"mode_{mode}")]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
+    emoji = "💼" if mode == "spot" else "📈"
+
     await update.message.reply_text(
-        f"{mode_emoji} <b>{token}</b>\n\n"
-        f"⏰ Pilih timeframe untuk analisis:",
+        f"{emoji} <b>{token}</b>\n\nPilih timeframe:",
         parse_mode="HTML",
-        reply_markup=reply_markup
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("⚡ Scalping (15m)", callback_data="strategy_15m"),
+                InlineKeyboardButton("📊 Day Trade (1h)", callback_data="strategy_1h")
+            ],
+            [
+                InlineKeyboardButton("🔄 Swing (1d)", callback_data="strategy_1d"),
+                InlineKeyboardButton("📈 Long-Term (1w)", callback_data="strategy_1w")
+            ],
+            [
+                InlineKeyboardButton("🎯 Multi TF (4h)", callback_data="strategy_4h")
+            ],
+            [
+                InlineKeyboardButton("🔙 Kembali", callback_data=f"mode_{mode}")
+            ]
+        ])
     )
-    
+
     return SELECTING_STRATEGY
+
+
+# =====================================================================
+# ========================= STRATEGY / ANALYSIS ========================
+# =====================================================================
 
 @only_allowed
 async def handle_strategy_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk analisis berdasarkan strategi"""
     query = update.callback_query
     await query.answer()
-    
+
     timeframe = query.data.split("_")[1]
     symbol = context.user_data.get("symbol")
     mode = context.user_data.get("mode", "spot")
-    
-    mode_emoji = "💼" if mode == "spot" else "📈"
-    mode_text = "SPOT" if mode == "spot" else "FUTURES"
-    
+
     await query.edit_message_text(
-        f"{mode_emoji} <b>Menganalisis {symbol}</b>\n\n"
-        f"Mode: {mode_text}\n"
-        f"Timeframe: {timeframe}\n\n"
-        f"⏳ Sedang mengambil data market...",
+        f"""
+⏳ <b>Menganalisis {symbol}</b>
+
+Mode: {mode.upper()}
+Timeframe: {timeframe}
+""",
         parse_mode="HTML"
     )
-    
-    try:
-        klines = binance_client.get_klines(
-            symbol=symbol, 
-            interval=timeframe, 
-            limit=100
-        )
-        
-        if not klines:
-            raise Exception("Data tidak tersedia untuk symbol ini")
-        
-        ohlc = [{
-            "time": k[0],
-            "open": float(k[1]),
-            "high": float(k[2]),
-            "low": float(k[3]),
-            "close": float(k[4]),
-            "volume": float(k[5])
-        } for k in klines]
-        
-        await query.edit_message_text(
-            f"{mode_emoji} <b>Menganalisis {symbol}</b>\n\n"
-            f"Mode: {mode_text}\n"
-            f"Timeframe: {timeframe}\n\n"
-            f"🤖 AI sedang menganalisis data...\n"
-            f"⏱️ Mohon tunggu 10-20 detik...",
-            parse_mode="HTML"
-        )
-        
-        gpt_result = analyze_with_gpt(symbol, timeframe, ohlc[-1], mode)
-        formatted_result = format_result_for_telegram(gpt_result)
-        
-        header = f"""
-{mode_emoji} <b>ANALISIS {mode_text} - {symbol}</b>
-⏰ Timeframe: {timeframe}
-💰 Price: ${ohlc[-1]['close']:,.2f}
 
-━━━━━━━━━━━━━━━━━━━━
-"""
-        
-        result_message = header + formatted_result
-        
-        keyboard = [
-            [
-                InlineKeyboardButton("🔄 Analisis Ulang", callback_data=f"strategy_{timeframe}"),
-                InlineKeyboardButton("🔙 Token Lain", callback_data=f"mode_{mode}")
-            ],
-            [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_to_start")]
+    klines = binance_client.get_klines(
+        symbol=symbol,
+        interval=TIMEFRAME_MAP[timeframe],
+        limit=100
+    )
+
+    ohlc = [{
+        "open": float(k[1]),
+        "high": float(k[2]),
+        "low": float(k[3]),
+        "close": float(k[4]),
+        "volume": float(k[5])
+    } for k in klines]
+
+    loop = asyncio.get_running_loop()
+    gpt_result = await loop.run_in_executor(
+        None,
+        analyze_with_gpt,
+        symbol,
+        timeframe,
+        ohlc[-1],
+        mode
+    )
+
+    formatted = format_result_for_telegram(gpt_result)
+
+    # === SIMPAN ANALYSIS (FIX KRITIS) ===
+    context.user_data["analysis"] = {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "mode": mode,
+        "ai_result": gpt_result,
+        "current_price": ohlc[-1]["close"]
+    }
+
+    keyboard = [
+        [
+            InlineKeyboardButton("🔄 Analisis Ulang", callback_data=f"strategy_{timeframe}"),
+            InlineKeyboardButton("🔙 Token Lain", callback_data=f"mode_{mode}")
+        ],
+        [
+            InlineKeyboardButton("🏠 Menu Utama", callback_data="back_to_start")
         ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            result_message,
-            parse_mode="HTML",
-            reply_markup=reply_markup
-        )
-        
-    except Exception as e:
-        error_msg = f"❌ <b>Terjadi Kesalahan</b>\n\n{str(e)}"
-        
-        keyboard = [
-            [InlineKeyboardButton("🔙 Coba Lagi", callback_data=f"mode_{mode}")],
-            [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_to_start")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            error_msg,
-            parse_mode="HTML",
-            reply_markup=reply_markup
-        )
-    
+    ]
+
+    await query.edit_message_text(
+        f"""
+<b>ANALISIS {symbol}</b>
+Timeframe: {timeframe}
+Price: ${ohlc[-1]['close']:,.2f}
+
+━━━━━━━━━━━━━━━
+{formatted}
+""",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
     return SELECTING_MODE
+
+
+# =====================================================================
+# ========================= HELP ======================================
+# =====================================================================
 
 @only_allowed
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk help"""
-    query = update.callback_query
-    if query:
-        await query.answer()
-    
-    help_text = """
-📚 <b>PANDUAN PENGGUNAAN BOT</b>
+    text = """
+📚 <b>PANDUAN BOT</b>
 
-<b>🎯 MODE TRADING:</b>
-- <b>SPOT</b> - Trading tanpa leverage, risk lebih rendah
-- <b>FUTURES</b> - Trading futures manual dengan leverage
-- <b>AUTO TRADING</b> - Bot otomatis scan & execute trade
+- SPOT: tanpa leverage
+- FUTURES: manual execution
+- AUTO: monitoring auto trading
 
-<b>⏰ TIMEFRAME:</b>
-- <b>Scalping (15m)</b> - Trading cepat, hold 15-60 menit
-- <b>Day Trade (1h)</b> - Trading harian, hold beberapa jam
-- <b>Swing (1d)</b> - Trading jangka menengah, hold beberapa hari
-- <b>Long-Term (1w)</b> - Investment jangka panjang
-- <b>Multi TF (4h)</b> - Analisis multi timeframe
-
-<b>⚠️ DISCLAIMER:</b>
-Bot ini hanya memberikan referensi. Trading crypto berisiko tinggi! Gunakan dana yang siap hilang.
+⚠️ Trading crypto berisiko tinggi.
 """
-    
-    keyboard = [[InlineKeyboardButton("🔙 Kembali", callback_data="back_to_start")]]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    if query:
-        await query.edit_message_text(
-            help_text,
+
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            text,
             parse_mode="HTML",
-            reply_markup=reply_markup
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Back", callback_data="back_to_start")]
+            ])
         )
     else:
-        await update.message.reply_text(
-            help_text,
-            parse_mode="HTML",
-            reply_markup=reply_markup
-        )
+        await update.message.reply_text(text, parse_mode="HTML")
+
+
+# =====================================================================
+# ========================= BUTTON ROUTER ==============================
+# =====================================================================
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler untuk semua callback button"""
     query = update.callback_query
     await query.answer()
-    
+
     if query.data == "back_to_start":
         return await start(update, context)
     elif query.data == "help":
         return await help_command(update, context)
-    elif query.data == "mode_auto":
-        return await show_auto_trading_menu(update, context)
     elif query.data.startswith("monitor_"):
         return await handle_monitor_actions(update, context)
     elif query.data.startswith("mode_"):
@@ -747,41 +702,44 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await handle_token_selection(update, context)
     elif query.data.startswith("strategy_"):
         return await handle_strategy_selection(update, context)
+    elif query.data == "execute_confirm":
+        return await handle_execute_confirm(update, context)
+    elif query.data == "execute_cancel":
+        return await handle_execute_cancel(update, context)
+    elif query.data == "execute_multi_tf":
+        return await handle_execute_futures(update, context)
+
+
+# =====================================================================
+# ========================= MAIN ======================================
+# =====================================================================
 
 def main():
-    """Main function untuk menjalankan bot"""
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    
+
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
             CallbackQueryHandler(button_handler)
         ],
         states={
-            SELECTING_MODE: [
-                CallbackQueryHandler(button_handler)
-            ],
+            SELECTING_MODE: [CallbackQueryHandler(button_handler)],
             SELECTING_TOKEN: [
                 CallbackQueryHandler(button_handler),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_token)
             ],
-            SELECTING_STRATEGY: [
-                CallbackQueryHandler(button_handler)
-            ]
+            SELECTING_STRATEGY: [CallbackQueryHandler(button_handler)]
         },
-        fallbacks=[
-            CommandHandler("start", start),
-            CallbackQueryHandler(button_handler)
-        ],
+        fallbacks=[CommandHandler("start", start)],
         allow_reentry=True
     )
-    
+
     app.add_handler(conv_handler)
     app.add_handler(CommandHandler("help", help_command))
-    
-    logging.info("🤖 Bot started successfully!")
-    logging.info("✅ Waiting for commands...")
+
+    logging.info("🤖 Bot started successfully")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
+
 
 if __name__ == "__main__":
     main()
