@@ -30,9 +30,9 @@ class BinanceFuturesTrader:
     # ========================= BALANCE ==========================
     # ============================================================
 
-def get_futures_balance(self):
-        """Get USDT balance in Futures wallet"""
-        try:
+    def get_futures_balance(self):
+            """Get USDT balance in Futures wallet"""
+            try:
             account = self.client.futures_account()
             for asset in account["assets"]:
                 if asset["asset"] == "USDT":
