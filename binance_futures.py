@@ -30,7 +30,7 @@ class BinanceFuturesTrader:
     # ========================= BALANCE ==========================
     # ============================================================
 
-    def get_futures_balance(self):
+def get_futures_balance(self):
         """Get USDT balance in Futures wallet"""
         try:
             account = self.client.futures_account()
@@ -49,7 +49,7 @@ class BinanceFuturesTrader:
             
             logger.warning("⚠️ USDT asset not found in futures account")
             return None
-                
+            
         except BinanceAPIException as e:
             logger.error(f"❌ Binance API Error getting balance: {e.message} (Code: {e.code})")
             return None
