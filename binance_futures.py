@@ -31,31 +31,31 @@ class BinanceFuturesTrader:
     # ============================================================
 
     def get_futures_balance(self):
-    """Get USDT balance in Futures wallet"""
-    try:
-        account = self.client.futures_account()
-        for asset in account["assets"]:
-            if asset["asset"] == "USDT":
-                balance_data = {
-                    "balance": float(asset["walletBalance"]),
-                    "available": float(asset["availableBalance"]),
-                    "availableBalance": float(asset["availableBalance"]),
-                    "unrealized_pnl": float(asset["unrealizedProfit"]),
-                    "crossWalletBalance": float(asset.get("crossWalletBalance", 0)),
-                    "marginBalance": float(asset.get("marginBalance", 0)),
-                }
-                logger.info(f"📊 Balance: ${balance_data['available']:.2f}")
-                return balance_data
-        
-        logger.warning("⚠️ USDT asset not found in futures account")
-        return None
-        
-    except BinanceAPIException as e:
-        logger.error(f"❌ Binance API Error getting balance: {e.message} (Code: {e.code})")
-        return None
-    except Exception as e:
-        logger.error(f"❌ Error getting futures balance: {e}")
-        return None
+        """Get USDT balance in Futures wallet"""
+        try:
+            account = self.client.futures_account()
+            for asset in account["assets"]:
+                if asset["asset"] == "USDT":
+                    balance_data = {
+                        "balance": float(asset["walletBalance"]),
+                        "available": float(asset["availableBalance"]),
+                        "availableBalance": float(asset["availableBalance"]),
+                        "unrealized_pnl": float(asset["unrealizedProfit"]),
+                        "crossWalletBalance": float(asset.get("crossWalletBalance", 0)),
+                        "marginBalance": float(asset.get("marginBalance", 0)),
+                    }
+                    logger.info(f"📊 Balance: ${balance_data['available']:.2f}")
+                    return balance_data
+            
+            logger.warning("⚠️ USDT asset not found in futures account")
+            return None
+                
+        except BinanceAPIException as e:
+            logger.error(f"❌ Binance API Error getting balance: {e.message} (Code: {e.code})")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Error getting futures balance: {e}")
+            return None
 
     # ============================================================
     # ========================= SYMBOL INFO ======================
