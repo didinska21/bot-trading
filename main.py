@@ -193,11 +193,15 @@ async def handle_execute_confirm(update: Update, context: ContextTypes.DEFAULT_T
 
         # Get balance
         balance = futures_trader.get_futures_balance()
-        if not balance or balance.get("availableBalance", 0) <= 0:
+
+        # ✅ FIXED: Support both key names
+        available_balance = balance.get("available", balance.get("availableBalance", 0))
+
+        if not balance or available_balance <= 0:
             raise Exception("Insufficient balance atau gagal mendapatkan balance")
 
         # Calculate position size (15% of available balance)
-        position_size = balance["availableBalance"] * 0.15
+        position_size = available_balance * 0.15
 
         # Calculate quantity
         quantity = futures_trader.calculate_quantity(
