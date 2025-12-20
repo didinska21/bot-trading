@@ -765,4 +765,352 @@ async def handle_leverage_input(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 # Continue to Part 3...
+# main.py - COMPLETE VERSION - PART 3/3 (FINAL)
 
+# =====================================================================
+# ================= EXECUTE CONFIRM (MANUAL) ==========================
+# =====================================================================
+
+@only_allowed
+async def handle_execute_confirm_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Execute futures order with manual input"""
+    query = update.callback_query
+    await query.answer()
+
+    analysis = context.user_data.get("analysis")
+    position_size = context.user_data.get("position_size")
+    leverage = context.user_data.get("leverage")
+    
+    if not analysis or not position_size or not leverage:
+        await query.answer("❌ Data tidak lengkap!", show_alert=True)
+        return await start(update, context)
+
+    await safe_edit_message(query, "⏳ <b>Memasang posisi...</b>\n\nMohon tunggu...")
+
+    try:
+        from binance_futures import BinanceFuturesTrader
+        futures_trader = BinanceFuturesTrader()
+        
+        ai_result = analysis["ai_result"]
+        current_price = analysis["current_price"]
+
+        # Detect side
+        ai_upper = ai_result.upper()
+        if "🟢 LONG" in ai_result or "**LONG**" in ai_result or "POSISI: LONG" in ai_upper:
+            side = "BUY"
+        elif "🔴 SHORT" in ai_result or "**SHORT**" in ai_result or "POSISI: SHORT" in ai_upper:
+            side = "SELL"
+        elif "LONG" in ai_upper and "SHORT" not in ai_upper:
+            side = "BUY"
+        elif "SHORT" in ai_upper and "LONG" not in ai_upper:
+            side = "SELL"
+        else:
+            raise Exception("Tidak dapat mendeteksi LONG/SHORT")
+
+        # Parse prices
+        entry_price = parse_price_from_ai(ai_result, 'entry', side, current_price)
+        tp_price = parse_price_from_ai(ai_result, 'tp', side, current_price)
+        sl_price = parse_price_from_ai(ai_result, 'sl', side, current_price)
+
+        # Validate
+        if side == "BUY":
+            if tp_price <= entry_price or sl_price >= entry_price:
+                raise Exception("Invalid price levels for LONG")
+        else:
+            if tp_price >= entry_price or sl_price <= entry_price:
+                raise Exception("Invalid price levels for SHORT")
+
+        # Calculate quantity
+        quantity = futures_trader.calculate_quantity(
+            analysis["symbol"],
+            entry_price,
+            position_size
+        )
+        
+        if not quantity:
+            raise Exception("Gagal menghitung quantity. Coba naikkan position size.")
+
+        # Place order
+        result = futures_trader.place_futures_order(
+            symbol=analysis["symbol"],
+            side=side,
+            quantity=quantity,
+            entry_price=entry_price,
+            tp_price=tp_price,
+            sl_price=sl_price,
+            leverage=leverage
+        )
+
+        if not result.get("success"):
+            raise Exception(result.get("error", "Unknown error"))
+
+        # Calculate PnL
+        if side == "BUY":
+            profit_pct = (tp_price - entry_price) / entry_price * 100
+            loss_pct = (entry_price - sl_price) / entry_price * 100
+        else:
+            profit_pct = (entry_price - tp_price) / entry_price * 100
+            loss_pct = (sl_price - entry_price) / entry_price * 100
+
+        rr = profit_pct / loss_pct if loss_pct > 0 else 0
+        max_profit = position_size * (profit_pct / 100) * leverage
+        max_loss = position_size * (loss_pct / 100) * leverage
+
+        success_msg = f"""
+✅ <b>POSISI BERHASIL DIPASANG!</b>
+
+━━━━━━━━━━━━━━━━━━━━
+📊 <b>ORDER</b>
+━━━━━━━━━━━━━━━━━━━━
+
+Symbol: {analysis['symbol']}
+Side: <b>{"🟢 LONG" if side == "BUY" else "🔴 SHORT"}</b>
+Leverage: <b>{leverage}x</b>
+
+━━━━━━━━━━━━━━━━━━━━
+💰 <b>PRICES</b>
+━━━━━━━━━━━━━━━━━━━━
+
+Entry: ${entry_price:.4f}
+TP: ${tp_price:.4f} (+{profit_pct:.2f}%)
+SL: ${sl_price:.4f} (-{loss_pct:.2f}%)
+
+━━━━━━━━━━━━━━━━━━━━
+📦 <b>POSITION</b>
+━━━━━━━━━━━━━━━━━━━━
+
+Quantity: {quantity}
+Size: ${position_size:.2f}
+
+━━━━━━━━━━━━━━━━━━━━
+📈 <b>RISK/REWARD</b>
+━━━━━━━━━━━━━━━━━━━━
+
+R/R: 1:{rr:.2f}
+Max Profit: ${max_profit:.2f}
+Max Loss: -${max_loss:.2f}
+
+━━━━━━━━━━━━━━━━━━━━
+🎯 <b>ORDER IDs</b>
+━━━━━━━━━━━━━━━━━━━━
+
+Entry: {result['entry_order']['orderId']}
+TP: {result['tp_order']['orderId']}
+SL: {result['sl_order']['orderId']}
+
+⚠️ Monitor posisi secara aktif!
+"""
+
+        keyboard = [
+            [InlineKeyboardButton("📊 Lihat di Binance", url=f"https://www.binance.com/en/futures/{analysis['symbol']}")],
+            [InlineKeyboardButton("📈 Trade Lagi", callback_data=f"mode_{analysis['mode']}")],
+            [InlineKeyboardButton("🏠 Menu", callback_data="back_to_start")]
+        ]
+
+        await safe_edit_message(query, success_msg, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    except Exception as e:
+        logging.error(f"Execute error: {e}")
+        await safe_edit_message(
+            query,
+            f"""
+❌ <b>GAGAL MEMASANG POSISI!</b>
+
+<b>Error:</b> {str(e)}
+
+<b>Solusi:</b>
+• Coba naikkan position size
+• Atau kurangi leverage
+• Atau pilih symbol lain
+
+<b>Debug:</b>
+Symbol: {analysis.get('symbol', 'N/A')}
+Size: ${position_size:.2f}
+Leverage: {leverage}x
+""",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Coba Lagi", callback_data="execute_multi_tf")],
+                [InlineKeyboardButton("🏠 Menu", callback_data="back_to_start")]
+            ])
+        )
+
+    return SELECTING_MODE
+
+
+@only_allowed
+async def handle_execute_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel execution"""
+    query = update.callback_query
+    await query.answer("❌ Dibatalkan", show_alert=True)
+    return await start(update, context)
+
+
+# =====================================================================
+# ========================= HELP ======================================
+# =====================================================================
+
+@only_allowed
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show help"""
+    text = """
+📚 <b>PANDUAN BOT</b>
+
+<b>💼 SPOT TRADING</b>
+Analisis tanpa leverage
+
+<b>📈 FUTURES TRADING</b>
+Trading dengan leverage
+• Input manual size & leverage
+• Auto TP/SL
+• High risk!
+
+<b>📊 TIMEFRAME</b>
+15m, 1h, 4h, 1d, 1w
+
+<b>⚠️ DISCLAIMER</b>
+Trading crypto berisiko tinggi!
+DYOR before trading!
+"""
+
+    keyboard = [[InlineKeyboardButton("🔙 Menu", callback_data="back_to_start")]]
+
+    if update.callback_query:
+        await safe_edit_message(
+            update.callback_query,
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+    else:
+        await update.message.reply_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    return SELECTING_MODE
+
+
+# =====================================================================
+# ========================= BUTTON ROUTER =============================
+# =====================================================================
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Central button handler"""
+    query = update.callback_query
+    
+    try:
+        await query.answer()
+        callback_data = query.data
+
+        if callback_data == "back_to_start":
+            return await start(update, context)
+        elif callback_data == "help":
+            return await help_command(update, context)
+        elif callback_data.startswith("monitor_"):
+            return await handle_monitor_actions(update, context)
+        elif callback_data.startswith("mode_"):
+            return await handle_mode_selection(update, context)
+        elif callback_data.startswith("token_"):
+            return await handle_token_selection(update, context)
+        elif callback_data.startswith("strategy_"):
+            return await handle_strategy_selection(update, context)
+        elif callback_data == "execute_confirm_manual":
+            return await handle_execute_confirm_manual(update, context)
+        elif callback_data == "execute_cancel":
+            return await handle_execute_cancel(update, context)
+        elif callback_data == "execute_multi_tf":
+            return await handle_execute_futures(update, context)
+        else:
+            await query.answer("❌ Invalid", show_alert=True)
+            return SELECTING_MODE
+
+    except Exception as e:
+        logging.error(f"Button error: {e}")
+        return await start(update, context)
+
+
+# =====================================================================
+# ========================= ERROR HANDLER =============================
+# =====================================================================
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Global error handler"""
+    logging.error(f"Update {update} caused error {context.error}")
+    
+    try:
+        if update and update.effective_message:
+            await update.effective_message.reply_text(
+                "❌ <b>Error!</b>\n\nSilakan /start kembali.",
+                parse_mode="HTML"
+            )
+    except:
+        pass
+
+
+# =====================================================================
+# ========================= MAIN ======================================
+# =====================================================================
+
+def main():
+    """Start the bot"""
+    try:
+        logging.info("🤖 Starting bot...")
+        
+        app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+        conv_handler = ConversationHandler(
+            entry_points=[
+                CommandHandler("start", start),
+                CallbackQueryHandler(button_handler)
+            ],
+            states={
+                SELECTING_MODE: [
+                    CallbackQueryHandler(button_handler)
+                ],
+                SELECTING_TOKEN: [
+                    CallbackQueryHandler(button_handler),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_token)
+                ],
+                SELECTING_STRATEGY: [
+                    CallbackQueryHandler(button_handler)
+                ],
+                INPUTTING_SIZE: [
+                    CallbackQueryHandler(button_handler),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_size_input)
+                ],
+                INPUTTING_LEVERAGE: [
+                    CallbackQueryHandler(button_handler),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_leverage_input)
+                ]
+            },
+            fallbacks=[
+                CommandHandler("start", start),
+                CommandHandler("help", help_command)
+            ],
+            allow_reentry=True,
+            conversation_timeout=600
+        )
+
+        app.add_handler(conv_handler)
+        app.add_handler(CommandHandler("help", help_command))
+        app.add_error_handler(error_handler)
+
+        logging.info("✅ Bot started successfully!")
+        logging.info("="*60)
+        logging.info("Bot is running... Press Ctrl+C to stop.")
+        logging.info("="*60)
+        
+        app.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
+
+    except Exception as e:
+        logging.error(f"❌ Failed to start bot: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        raise
+
+
+if __name__ == "__main__":
+    main()
