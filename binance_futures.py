@@ -1,4 +1,4 @@
-# binance_futures.py - IMPROVED VERSION with Better Error Handling
+# binance_futures.py - FIXED VERSION with Correct Indentation
 
 import logging
 import time
@@ -239,141 +239,128 @@ class BinanceFuturesTrader:
             logger.error(traceback.format_exc())
             return None
 
+    # ============================================================
+    # ========== HELPER FUNCTIONS FOR MINIMUM BALANCE ============
+    # ============================================================
 
-# ========== TAMBAHAN: Helper function untuk check minimum balance ==========
-
-def get_minimum_balance_info(self, symbol, leverage=10, position_size_pct=0.15):
-    """
-    Get minimum balance information for a symbol
-    
-    Returns:
-        dict dengan info minimum requirements
-    """
-    try:
-        info = self.get_symbol_info(symbol)
-        if not info:
-            return None
+    def get_minimum_balance_info(self, symbol, leverage=10, position_size_pct=0.15):
+        """
+        Get minimum balance information for a symbol
         
-        # Get current price
-        current_price = self.get_current_price(symbol)
-        if not current_price:
-            return None
-        
-        min_notional = info["min_notional"]
-        min_qty = info["min_qty"]
-        
-        # Calculate minimum position size needed
-        min_position_size = max(
-            min_notional * 1.1,  # Add 10% buffer
-            min_qty * current_price
-        )
-        
-        # Calculate minimum balance needed
-        min_balance_needed = min_position_size / position_size_pct
-        
-        return {
-            "symbol": symbol,
-            "current_price": current_price,
-            "min_notional": min_notional,
-            "min_qty": min_qty,
-            "min_position_size": min_position_size,
-            "min_balance_needed": min_balance_needed,
-            "max_leverage": info["max_leverage"],
-            "position_size_pct": position_size_pct * 100,
-        }
-        
-    except Exception as e:
-        logger.error(f"Error getting minimum balance info: {e}")
-        return None
-
-
-# ========== TAMBAHAN: Function untuk suggest optimal settings ==========
-
-def suggest_position_settings(self, symbol, available_balance):
-    """
-    Suggest optimal position size and leverage based on balance
-    
-    Returns:
-        dict dengan suggested settings atau None jika balance terlalu kecil
-    """
-    try:
-        info = self.get_symbol_info(symbol)
-        if not info:
-            return None
-        
-        current_price = self.get_current_price(symbol)
-        if not current_price:
-            return None
-        
-        min_notional = info["min_notional"]
-        max_leverage = info["max_leverage"]
-        
-        # Calculate different scenarios
-        scenarios = []
-        
-        for pct in [0.10, 0.15, 0.25, 0.50, 0.75, 1.0]:
-            position_size = available_balance * pct
+        Returns:
+            dict dengan info minimum requirements
+        """
+        try:
+            info = self.get_symbol_info(symbol)
+            if not info:
+                return None
             
-            if position_size >= min_notional * 1.1:
-                # Calculate quantity
-                quantity = self.calculate_quantity(symbol, current_price, position_size)
-                
-                if quantity:
-                    scenarios.append({
-                        "position_size": position_size,
-                        "position_pct": pct * 100,
-                        "quantity": quantity,
-                        "can_trade": True,
-                        "risk_level": "LOW" if pct <= 0.25 else "MEDIUM" if pct <= 0.50 else "HIGH"
-                    })
-        
-        if not scenarios:
-            # Balance too small
-            min_balance_needed = (min_notional * 1.1) / 0.10
+            # Get current price
+            current_price = self.get_current_price(symbol)
+            if not current_price:
+                return None
+            
+            min_notional = info["min_notional"]
+            min_qty = info["min_qty"]
+            
+            # Calculate minimum position size needed
+            min_position_size = max(
+                min_notional * 1.1,  # Add 10% buffer
+                min_qty * current_price
+            )
+            
+            # Calculate minimum balance needed
+            min_balance_needed = min_position_size / position_size_pct
+            
             return {
-                "can_trade": False,
+                "symbol": symbol,
+                "current_price": current_price,
+                "min_notional": min_notional,
+                "min_qty": min_qty,
+                "min_position_size": min_position_size,
                 "min_balance_needed": min_balance_needed,
-                "current_balance": available_balance,
-                "shortage": min_balance_needed - available_balance
+                "max_leverage": info["max_leverage"],
+                "position_size_pct": position_size_pct * 100,
             }
-        
-        # Return best scenario (lowest risk that works)
-        best = scenarios[0]
-        
-        # Suggest leverage based on position size
-        if best["position_pct"] < 20:
-            suggested_leverage = min(20, max_leverage)
-        elif best["position_pct"] < 50:
-            suggested_leverage = min(10, max_leverage)
-        else:
-            suggested_leverage = min(5, max_leverage)
-        
-        return {
-            "can_trade": True,
-            "suggested_position_size": best["position_size"],
-            "suggested_position_pct": best["position_pct"],
-            "suggested_leverage": suggested_leverage,
-            "quantity": best["quantity"],
-            "risk_level": best["risk_level"],
-            "all_scenarios": scenarios,
-            "max_leverage": max_leverage,
-            "min_notional": min_notional
-        }
-        
-    except Exception as e:
-        logger.error(f"Error suggesting settings: {e}")
-        return None
+            
+        except Exception as e:
+            logger.error(f"Error getting minimum balance info: {e}")
+            return None
 
-
-# ========== INFO: Ini adalah UPDATE untuk binance_futures.py ==========
-# 
-# Yang diupdate:
-# 1. calculate_quantity() - Tambah detailed logging
-# 2. get_minimum_balance_info() - NEW function
-# 3. suggest_position_settings() - NEW function (optional, bisa skip)
-# 
-# Note: Function suggest_position_settings() adalah bonus feature
-# untuk suggest optimal settings ke user. Bisa dipakai nanti kalau mau.
+    def suggest_position_settings(self, symbol, available_balance):
+        """
+        Suggest optimal position size and leverage based on balance
+        
+        Returns:
+            dict dengan suggested settings atau None jika balance terlalu kecil
+        """
+        try:
+            info = self.get_symbol_info(symbol)
+            if not info:
+                return None
+            
+            current_price = self.get_current_price(symbol)
+            if not current_price:
+                return None
+            
+            min_notional = info["min_notional"]
+            max_leverage = info["max_leverage"]
+            
+            # Calculate different scenarios
+            scenarios = []
+            
+            for pct in [0.10, 0.15, 0.25, 0.50, 0.75, 1.0]:
+                position_size = available_balance * pct
+                
+                if position_size >= min_notional * 1.1:
+                    # Calculate quantity
+                    quantity = self.calculate_quantity(symbol, current_price, position_size)
+                    
+                    if quantity:
+                        scenarios.append({
+                            "position_size": position_size,
+                            "position_pct": pct * 100,
+                            "quantity": quantity,
+                            "can_trade": True,
+                            "risk_level": "LOW" if pct <= 0.25 else "MEDIUM" if pct <= 0.50 else "HIGH"
+                        })
+            
+            if not scenarios:
+                # Balance too small
+                min_balance_needed = (min_notional * 1.1) / 0.10
+                return {
+                    "can_trade": False,
+                    "min_balance_needed": min_balance_needed,
+                    "current_balance": available_balance,
+                    "shortage": min_balance_needed - available_balance
+                }
+            
+            # Return best scenario (lowest risk that works)
+            best = scenarios[0]
+            
+            # Suggest leverage based on position size
+            if best["position_pct"] < 20:
+                suggested_leverage = min(20, max_leverage)
+            elif best["position_pct"] < 50:
+                suggested_leverage = min(10, max_leverage)
+            else:
+                suggested_leverage = min(5, max_leverage)
+            
+            return {
+                "can_trade": True,
+                "suggested_position_size": best["position_size"],
+                "suggested_position_pct": best["position_pct"],
+                "suggested_leverage": suggested_leverage,
+                "quantity": best["quantity"],
+                "risk_level": best["risk_level"],
+                "all_scenarios": scenarios,
+                "max_leverage": max_leverage,
+                "min_notional": min_notional
+            }
+            
+        except Exception as e:
+            logger.error(f"Error suggesting settings: {e}")
+            return None
 
     # ============================================================
     # ========================= VALIDATION =======================
