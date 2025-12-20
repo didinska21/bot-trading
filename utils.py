@@ -1,4 +1,4 @@
-# utils.py - ENHANCED VERSION with Better Formatting & Error Handling
+# utils.py - IMPROVED VERSION with Enhanced Error Handling & New Features
 
 import re
 import logging
@@ -7,6 +7,7 @@ from telegram.ext import ContextTypes
 from config import ALLOWED_USER_IDS
 from functools import wraps
 from datetime import datetime
+import traceback
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +139,26 @@ def only_allowed(func):
             f"✅ Access GRANTED - User: {full_name} (@{username}, ID: {user_id})"
         )
         
-        return await func(update, context)
+        # Call the actual function with error handling
+        try:
+            return await func(update, context)
+        except Exception as e:
+            logger.error(f"Error in {func.__name__}: {e}")
+            logger.error(traceback.format_exc())
+            
+            # Send error message to user
+            error_text = (
+                "❌ <b>Terjadi kesalahan!</b>\n\n"
+                f"<code>{str(e)}</code>\n\n"
+                "Silakan coba lagi atau hubungi admin."
+            )
+            
+            if update.message:
+                await update.message.reply_text(error_text, parse_mode="HTML")
+            elif update.callback_query:
+                await update.callback_query.message.reply_text(error_text, parse_mode="HTML")
+            
+            raise
     
     return wrapper
 
@@ -164,7 +184,6 @@ def format_result_for_telegram(text: str) -> str:
     """
     Format AI result untuk Telegram HTML
     Converts markdown-style formatting to HTML
-    FIXED: No more double bold tags
     """
     if not text:
         return ""
@@ -184,52 +203,40 @@ def format_result_for_telegram(text: str) -> str:
         flags=re.IGNORECASE
     )
 
-    # ✅ STEP 1: Convert **bold** to <b>bold</b> FIRST
-    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-    
-    # ✅ STEP 2: Convert *italic* to <i>italic</i>
-    text = re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
-    
-    # ✅ STEP 3: Convert __underline__ to <u>underline</u>
-    text = re.sub(r'__(.+?)__', r'<u>\1</u>', text)
-    
-    # ✅ STEP 4: Convert `code` to <code>code</code>
-    text = re.sub(r'`(.+?)`', r'<code>\1</code>', text)
-
-    # ✅ STEP 5: Now do specific replacements (no more ** to replace)
+    # Main replacements for common AI output patterns
     replacements = {
-        # Signals - These are now already <b>LONG</b> etc
-        "<b>LONG</b>": "<b>🟢 LONG</b>",
-        "<b>SHORT</b>": "<b>🔴 SHORT</b>",
-        "<b>BUY</b>": "<b>🟢 BUY</b>",
-        "<b>SELL</b>": "<b>🔴 SELL</b>",
-        "<b>WAIT</b>": "<b>⏸️ WAIT</b>",
-        "<b>HOLD</b>": "<b>✋ HOLD</b>",
-        
         # Headers
-        "<b>FUTURES</b>": "<b>📊 REKOMENDASI SETUP FUTURES</b>",
-        "<b>SPOT</b>": "<b>💼 REKOMENDASI SETUP SPOT</b>",
-        "<b>Catatan</b>": "<b>📝 CATATAN TAMBAHAN</b>",
-        "<b>Note</b>": "<b>📝 CATATAN TAMBAHAN</b>",
+        "**FUTURES**": "<b>📊 REKOMENDASI SETUP FUTURES</b>",
+        "**SPOT**": "<b>💼 REKOMENDASI SETUP SPOT</b>",
+        "**Catatan**": "<b>📝 CATATAN TAMBAHAN</b>",
+        "**Note**": "<b>📝 CATATAN TAMBAHAN</b>",
         
         # Metrics
-        "<b>Risk Reward Ratio</b>": "<b>📈 RISK REWARD RATIO</b>",
-        "<b>Confidence Level</b>": "<b>🔍 CONFIDENCE LEVEL</b>",
-        "<b>Win Rate</b>": "<b>🎯 WIN RATE</b>",
-        "<b>Risk Level</b>": "<b>⚠️ RISK LEVEL</b>",
+        "**Risk Reward Ratio**": "<b>📈 RISK REWARD RATIO</b>",
+        "**Confidence Level**": "<b>🔐 CONFIDENCE LEVEL</b>",
+        "**Win Rate**": "<b>🎯 WIN RATE</b>",
+        "**Risk Level**": "<b>⚠️ RISK LEVEL</b>",
         
         # Signals
-        "<b>Sinyal Aksi</b>": "<b>🔔 SINYAL AKSI</b>",
-        "<b>Trading Signal</b>": "<b>🔔 SINYAL TRADING</b>",
-        "<b>Recommendation</b>": "<b>💡 REKOMENDASI</b>",
+        "**Sinyal Aksi**": "<b>🔔 SINYAL AKSI</b>",
+        "**Trading Signal**": "<b>🔔 SINYAL TRADING</b>",
+        "**Recommendation**": "<b>💡 REKOMENDASI</b>",
         
         # Analysis sections
-        "<b>Analisis tren pasar</b>": "<b><u>📊 ANALISIS TREN PASAR</u></b>",
-        "<b>Market Analysis</b>": "<b><u>📊 ANALISIS PASAR</u></b>",
-        "<b>Technical Analysis</b>": "<b><u>🔍 ANALISIS TEKNIKAL</u></b>",
-        "<b>Fundamental Analysis</b>": "<b><u>📰 ANALISIS FUNDAMENTAL</u></b>",
+        "**Analisis tren pasar**": "<b><u>📊 ANALISIS TREN PASAR</u></b>",
+        "**Market Analysis**": "<b><u>📊 ANALISIS PASAR</u></b>",
+        "**Technical Analysis**": "<b><u>🔍 ANALISIS TEKNIKAL</u></b>",
+        "**Fundamental Analysis**": "<b><u>📰 ANALISIS FUNDAMENTAL</u></b>",
         
-        # Price levels - Add emoji WITHOUT bold wrapper
+        # Actions
+        "**LONG**": "<b>🟢 LONG</b>",
+        "**SHORT**": "<b>🔴 SHORT</b>",
+        "**BUY**": "<b>🟢 BUY</b>",
+        "**SELL**": "<b>🔴 SELL</b>",
+        "**WAIT**": "<b>⏸️ WAIT</b>",
+        "**HOLD**": "<b>✋ HOLD</b>",
+        
+        # Price levels
         "Entry Range": "💰 <b>Entry Range</b>",
         "Entry Price": "💰 <b>Entry Price</b>",
         "Take Profit": "🎯 <b>Take Profit</b>",
@@ -240,58 +247,23 @@ def format_result_for_telegram(text: str) -> str:
     # Apply all replacements
     for old, new in replacements.items():
         text = text.replace(old, new)
-    
-    # Add line breaks for better readability
-    text = text.replace("\n\n", "\n━━━━━━━━━━━━━━━\n")
 
-    return text
+    # Convert remaining **bold** to <b>bold</b>
+    text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+    
+    # Convert *italic* to <i>italic</i>
+    text = re.sub(r'\*([^*]+?)\*', r'<i>\1</i>', text)
+    
+    # Convert __underline__ to <u>underline</u>
+    text = re.sub(r'__(.+?)__', r'<u>\1</u>', text)
+    
+    # Convert `code` to <code>code</code>
+    text = re.sub(r'`(.+?)`', r'<code>\1</code>', text)
+    
+    # Clean up excessive line breaks (max 2 consecutive)
+    text = re.sub(r'\n{3,}', '\n\n', text)
 
-
-# ============================================================
-# ========================= TESTING ==========================
-# ============================================================
-
-if __name__ == "__main__":
-    """Test the fixed formatting"""
-    
-    print("="*60)
-    print("TESTING FIXED FORMAT FUNCTION")
-    print("="*60)
-    
-    # Test case 1: Basic formatting
-    print("\n1. Basic Bold/Italic/Code:")
-    sample1 = "This is **bold**, *italic*, and `code`"
-    print(f"   Input:  {sample1}")
-    print(f"   Output: {format_result_for_telegram(sample1)}")
-    
-    # Test case 2: Trading signals
-    print("\n2. Trading Signals:")
-    sample2 = "**LONG** at Entry Range: $100-$105\nTake Profit: $120\nStop Loss: $95"
-    print(f"   Input:  {sample2}")
-    print(f"   Output: {format_result_for_telegram(sample2)}")
-    
-    # Test case 3: Multiple signals
-    print("\n3. Multiple Signals:")
-    sample3 = """
-**LONG** position recommended
-Entry Range: $50000-$51000
-Take Profit: $55000
-Stop Loss: $48000
-**Risk Reward Ratio**: 1:2.5
-**Confidence Level**: High
-"""
-    print(f"   Input:  {sample3.strip()}")
-    print(f"   Output: {format_result_for_telegram(sample3)}")
-    
-    # Test case 4: SHORT signal
-    print("\n4. SHORT Signal:")
-    sample4 = "**SHORT** at Entry Price: $100\nTake Profit: $90\nStop Loss: $105"
-    print(f"   Input:  {sample4}")
-    print(f"   Output: {format_result_for_telegram(sample4)}")
-    
-    print("\n" + "="*60)
-    print("✅ All formatting tests completed!")
-    print("="*60)
+    return text.strip()
 
 
 def clean_ai_response(text: str) -> str:
@@ -313,6 +285,16 @@ def clean_ai_response(text: str) -> str:
     text = text.strip()
     
     return text
+
+
+def truncate_text(text: str, max_length: int = 4096, suffix: str = "...") -> str:
+    """
+    Truncate text to fit Telegram message limit (4096 chars)
+    """
+    if len(text) <= max_length:
+        return text
+    
+    return text[:max_length - len(suffix)] + suffix
 
 
 # ============================================================
@@ -338,8 +320,38 @@ def format_timestamp(timestamp=None):
         timestamp = datetime.now()
     elif isinstance(timestamp, (int, float)):
         timestamp = datetime.fromtimestamp(timestamp)
+    elif isinstance(timestamp, str):
+        try:
+            timestamp = datetime.fromisoformat(timestamp)
+        except:
+            return timestamp
     
     return timestamp.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def get_time_ago(timestamp):
+    """Get human-readable time difference"""
+    try:
+        if isinstance(timestamp, str):
+            timestamp = datetime.fromisoformat(timestamp)
+        elif isinstance(timestamp, (int, float)):
+            timestamp = datetime.fromtimestamp(timestamp)
+        
+        now = datetime.now()
+        diff = now - timestamp
+        
+        seconds = diff.total_seconds()
+        
+        if seconds < 60:
+            return f"{int(seconds)} detik lalu"
+        elif seconds < 3600:
+            return f"{int(seconds/60)} menit lalu"
+        elif seconds < 86400:
+            return f"{int(seconds/3600)} jam lalu"
+        else:
+            return f"{int(seconds/86400)} hari lalu"
+    except:
+        return "N/A"
 
 
 # ============================================================
@@ -352,9 +364,9 @@ def calculate_pnl_percentage(entry_price, exit_price, side="LONG"):
         entry = float(entry_price)
         exit = float(exit_price)
         
-        if side.upper() == "LONG":
+        if side.upper() in ["LONG", "BUY"]:
             pnl_pct = ((exit - entry) / entry) * 100
-        else:  # SHORT
+        else:  # SHORT or SELL
             pnl_pct = ((entry - exit) / entry) * 100
         
         return pnl_pct
@@ -369,10 +381,10 @@ def calculate_risk_reward(entry, tp, sl, side="LONG"):
         tp = float(tp)
         sl = float(sl)
         
-        if side.upper() == "LONG":
+        if side.upper() in ["LONG", "BUY"]:
             reward = abs(tp - entry)
             risk = abs(entry - sl)
-        else:  # SHORT
+        else:  # SHORT or SELL
             reward = abs(entry - tp)
             risk = abs(sl - entry)
         
@@ -432,12 +444,12 @@ def validate_price_levels(entry, tp, sl, side="LONG"):
         tp = float(tp)
         sl = float(sl)
         
-        if side.upper() == "LONG":
+        if side.upper() in ["LONG", "BUY"]:
             if tp <= entry:
                 return False, "TP must be above entry for LONG"
             if sl >= entry:
                 return False, "SL must be below entry for LONG"
-        else:  # SHORT
+        else:  # SHORT or SELL
             if tp >= entry:
                 return False, "TP must be below entry for SHORT"
             if sl <= entry:
@@ -448,6 +460,36 @@ def validate_price_levels(entry, tp, sl, side="LONG"):
         return False, f"Validation error: {str(e)}"
 
 
+def calculate_liquidation_price(entry_price, leverage, side="LONG", maintenance_margin_rate=0.004):
+    """
+    Calculate liquidation price for futures position
+    
+    Args:
+        entry_price: Entry price
+        leverage: Leverage used
+        side: LONG or SHORT
+        maintenance_margin_rate: Maintenance margin rate (default 0.4%)
+    
+    Returns:
+        Liquidation price
+    """
+    try:
+        entry = float(entry_price)
+        lev = float(leverage)
+        mmr = float(maintenance_margin_rate)
+        
+        if side.upper() in ["LONG", "BUY"]:
+            # For LONG: Liq = Entry * (1 - 1/Leverage + MMR)
+            liq_price = entry * (1 - 1/lev + mmr)
+        else:  # SHORT
+            # For SHORT: Liq = Entry * (1 + 1/Leverage - MMR)
+            liq_price = entry * (1 + 1/lev - mmr)
+        
+        return liq_price
+    except:
+        return 0.0
+
+
 # ============================================================
 # ========================= SYMBOL HELPERS ===================
 # ============================================================
@@ -456,7 +498,7 @@ def normalize_symbol(symbol: str) -> str:
     """Normalize symbol format (add USDT if needed)"""
     symbol = symbol.upper().strip()
     
-    if not symbol.endswith("USDT"):
+    if not symbol.endswith("USDT") and not symbol.endswith("BUSD"):
         symbol += "USDT"
     
     return symbol
@@ -481,6 +523,8 @@ def format_error_message(error, context=""):
         "APIError(code=-2015)": "❌ API key tidak valid atau expired",
         "APIError(code=-1003)": "⚠️ Terlalu banyak request, coba lagi sebentar",
         "APIError(code=-4046)": "ℹ️ Margin type sudah sesuai",
+        "APIError(code=-4028)": "ℹ️ Leverage sudah sesuai",
+        "APIError(code=-2019)": "❌ Balance tidak cukup",
         "Timeout": "⏱️ Request timeout, coba lagi",
         "Connection": "🔌 Koneksi bermasalah, coba lagi",
         "insufficient balance": "💰 Balance tidak cukup",
@@ -489,6 +533,8 @@ def format_error_message(error, context=""):
     
     for pattern, friendly_msg in error_patterns.items():
         if pattern in error_msg:
+            if context:
+                return f"{friendly_msg}\n\n<b>Context:</b> {context}\n<i>Detail: {error_msg}</i>"
             return f"{friendly_msg}\n\n<i>Detail: {error_msg}</i>"
     
     return f"❌ Error: {error_msg}"
@@ -508,6 +554,15 @@ def is_valid_side(side: str) -> bool:
     """Check if trading side is valid"""
     valid_sides = ["BUY", "SELL", "LONG", "SHORT"]
     return side.upper() in valid_sides
+
+
+def is_valid_leverage(leverage: int, max_leverage: int = 125) -> bool:
+    """Check if leverage is valid"""
+    try:
+        lev = int(leverage)
+        return 1 <= lev <= max_leverage
+    except:
+        return False
 
 
 # ============================================================
@@ -542,9 +597,9 @@ def format_dict_for_log(data: dict, indent=2) -> str:
 if __name__ == "__main__":
     """Test utility functions"""
     
-    print("="*50)
+    print("="*60)
     print("TESTING UTILS.PY")
-    print("="*50)
+    print("="*60)
     
     # Test 1: Number formatting
     print("\n1. Number Formatting:")
@@ -587,13 +642,18 @@ if __name__ == "__main__":
     print(f"   'btc' -> {normalize_symbol('btc')}")
     print(f"   'ETHUSDT' -> {normalize_symbol('ETHUSDT')}")
     
-    # Test 8: AI text formatting
-    print("\n8. AI Text Formatting:")
-    sample = "**LONG** at Entry Range: $100-$105\n**Take Profit**: $120\n**Stop Loss**: $95"
-    formatted = format_result_for_telegram(sample)
-    print(f"   Original: {sample}")
-    print(f"   Formatted: {formatted}")
+    # Test 8: Liquidation price
+    print("\n8. Liquidation Price Calculation:")
+    liq = calculate_liquidation_price(100, 10, "LONG")
+    print(f"   LONG at 100 with 10x leverage -> Liq: {liq:.2f}")
     
-    print("\n" + "="*50)
+    # Test 9: Text truncation
+    print("\n9. Text Truncation:")
+    long_text = "A" * 5000
+    truncated = truncate_text(long_text, 100)
+    print(f"   Original length: {len(long_text)}")
+    print(f"   Truncated length: {len(truncated)}")
+    
+    print("\n" + "="*60)
     print("All tests completed!")
-    print("="*50)
+    print("="*60)
