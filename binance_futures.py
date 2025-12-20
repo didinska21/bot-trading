@@ -184,94 +184,60 @@ class BinanceFuturesTrader:
     # ========================= QUANTITY =========================
     # ============================================================
 
-# binance_futures.py - UPDATE: calculate_quantity() dengan Detailed Logging
+    def calculate_quantity(self, symbol, entry_price, position_size_usd):
+        """Calculate valid quantity based on position size in USD"""
+        try:
+            info = self.get_symbol_info(symbol)
+            if not info:
+                logger.error(f"❌ Cannot get symbol info for {symbol}")
+                return None
 
-# REPLACE function calculate_quantity() dengan versi ini:
+            logger.info(f"\n{'='*60}")
+            logger.info(f"CALCULATING QUANTITY FOR {symbol}")
+            logger.info(f"{'='*60}")
+            logger.info(f"Entry Price: ${entry_price:.8f}")
+            logger.info(f"Position Size (USD): ${position_size_usd:.2f}")
+            logger.info(f"Min Notional: ${info['min_notional']:.2f}")
+            logger.info(f"Min Qty: {info['min_qty']}")
+            logger.info(f"Step Size: {info['step_size']}")
 
-def calculate_quantity(self, symbol, entry_price, position_size_usd):
-    """
-    Calculate valid quantity based on position size in USD
-    WITH DETAILED LOGGING untuk debugging
-    """
-    try:
-        info = self.get_symbol_info(symbol)
-        if not info:
-            logger.error(f"❌ Cannot get symbol info for {symbol}")
-            return None
+            # Calculate raw quantity
+            raw_quantity = position_size_usd / entry_price
+            logger.info(f"Raw Quantity: {raw_quantity}")
+            
+            # Round to step size
+            quantity = self.round_step_size(raw_quantity, info["step_size"])
+            logger.info(f"Rounded Quantity: {quantity}")
 
-        # ========== DETAILED LOGGING ==========
-        logger.info(f"\n{'='*60}")
-        logger.info(f"CALCULATING QUANTITY FOR {symbol}")
-        logger.info(f"{'='*60}")
-        logger.info(f"Entry Price: ${entry_price:.8f}")
-        logger.info(f"Position Size (USD): ${position_size_usd:.2f}")
-        logger.info(f"")
-        logger.info(f"Symbol Requirements:")
-        logger.info(f"  Min Notional: ${info['min_notional']:.2f}")
-        logger.info(f"  Min Qty: {info['min_qty']}")
-        logger.info(f"  Max Qty: {info['max_qty']}")
-        logger.info(f"  Step Size: {info['step_size']}")
-        logger.info(f"")
+            # Calculate notional
+            notional = quantity * entry_price
+            logger.info(f"Notional Value: ${notional:.2f}")
 
-        # Calculate raw quantity
-        raw_quantity = position_size_usd / entry_price
-        logger.info(f"Calculation Steps:")
-        logger.info(f"  Raw Quantity: {raw_quantity} ({position_size_usd:.2f} / {entry_price:.8f})")
-        
-        # Round to step size
-        quantity = self.round_step_size(raw_quantity, info["step_size"])
-        logger.info(f"  Rounded Quantity: {quantity}")
+            # Validate minimum quantity
+            if quantity < info["min_qty"]:
+                logger.error(f"❌ Quantity {quantity} < Min Qty {info['min_qty']}")
+                return None
 
-        # Calculate notional
-        notional = quantity * entry_price
-        logger.info(f"  Notional Value: ${notional:.2f}")
-        logger.info(f"")
+            # Validate maximum quantity
+            if quantity > info["max_qty"]:
+                logger.error(f"❌ Quantity {quantity} > Max Qty {info['max_qty']}")
+                return None
 
-        # ========== VALIDATION ==========
-        logger.info(f"Validation:")
-        
-        # Check minimum quantity
-        if quantity < info["min_qty"]:
-            min_position_needed = info["min_qty"] * entry_price
-            logger.error(f"  ❌ FAILED: Quantity too small")
-            logger.error(f"     Current: {quantity}")
-            logger.error(f"     Minimum: {info['min_qty']}")
-            logger.error(f"     Need at least ${min_position_needed:.2f} position size")
+            # Validate minimum notional
+            if notional < info["min_notional"]:
+                logger.error(f"❌ Notional ${notional:.2f} < Min ${info['min_notional']:.2f}")
+                return None
+
+            logger.info(f"✅ Quantity: {quantity}, Notional: ${notional:.2f}")
             logger.info(f"{'='*60}\n")
+            
+            return quantity
+            
+        except Exception as e:
+            logger.error(f"❌ Error calculating quantity: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
-
-        # Check maximum quantity
-        if quantity > info["max_qty"]:
-            logger.error(f"  ❌ FAILED: Quantity too large")
-            logger.error(f"     Current: {quantity}")
-            logger.error(f"     Maximum: {info['max_qty']}")
-            logger.info(f"{'='*60}\n")
-            return None
-
-        # Check minimum notional
-        if notional < info["min_notional"]:
-            logger.error(f"  ❌ FAILED: Notional value too small")
-            logger.error(f"     Current: ${notional:.2f}")
-            logger.error(f"     Minimum: ${info['min_notional']:.2f}")
-            logger.error(f"     Need at least ${info['min_notional']:.2f} position size")
-            logger.info(f"{'='*60}\n")
-            return None
-
-        logger.info(f"  ✅ Quantity validation: PASSED")
-        logger.info(f"  ✅ Notional validation: PASSED")
-        logger.info(f"")
-        logger.info(f"Result:")
-        logger.info(f"  Final Quantity: {quantity}")
-        logger.info(f"  Final Notional: ${notional:.2f}")
-        logger.info(f"{'='*60}\n")
-        
-        return quantity
-        
-    except Exception as e:
-        logger.error(f"❌ Error calculating quantity: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return None
 
 
 # ========== TAMBAHAN: Helper function untuk check minimum balance ==========
