@@ -184,42 +184,230 @@ class BinanceFuturesTrader:
     # ========================= QUANTITY =========================
     # ============================================================
 
-    def calculate_quantity(self, symbol, entry_price, position_size_usd):
-        """Calculate valid quantity based on position size in USD"""
-        try:
-            info = self.get_symbol_info(symbol)
-            if not info:
-                logger.error(f"❌ Cannot get symbol info for {symbol}")
-                return None
+# binance_futures.py - UPDATE: calculate_quantity() dengan Detailed Logging
 
-            # Calculate raw quantity
-            quantity = position_size_usd / entry_price
-            
-            # Round to step size
-            quantity = self.round_step_size(quantity, info["step_size"])
+# REPLACE function calculate_quantity() dengan versi ini:
 
-            # Validate minimum quantity
-            if quantity < info["min_qty"]:
-                logger.error(f"❌ Quantity {quantity} below minimum {info['min_qty']}")
-                return None
-
-            # Validate maximum quantity
-            if quantity > info["max_qty"]:
-                logger.error(f"❌ Quantity {quantity} exceeds maximum {info['max_qty']}")
-                return None
-
-            # Validate minimum notional
-            notional = quantity * entry_price
-            if notional < info["min_notional"]:
-                logger.error(f"❌ Notional ${notional:.2f} below minimum ${info['min_notional']:.2f}")
-                return None
-
-            logger.info(f"✅ Calculated quantity: {quantity} (Notional: ${notional:.2f})")
-            return quantity
-            
-        except Exception as e:
-            logger.error(f"❌ Error calculating quantity: {e}")
+def calculate_quantity(self, symbol, entry_price, position_size_usd):
+    """
+    Calculate valid quantity based on position size in USD
+    WITH DETAILED LOGGING untuk debugging
+    """
+    try:
+        info = self.get_symbol_info(symbol)
+        if not info:
+            logger.error(f"❌ Cannot get symbol info for {symbol}")
             return None
+
+        # ========== DETAILED LOGGING ==========
+        logger.info(f"\n{'='*60}")
+        logger.info(f"CALCULATING QUANTITY FOR {symbol}")
+        logger.info(f"{'='*60}")
+        logger.info(f"Entry Price: ${entry_price:.8f}")
+        logger.info(f"Position Size (USD): ${position_size_usd:.2f}")
+        logger.info(f"")
+        logger.info(f"Symbol Requirements:")
+        logger.info(f"  Min Notional: ${info['min_notional']:.2f}")
+        logger.info(f"  Min Qty: {info['min_qty']}")
+        logger.info(f"  Max Qty: {info['max_qty']}")
+        logger.info(f"  Step Size: {info['step_size']}")
+        logger.info(f"")
+
+        # Calculate raw quantity
+        raw_quantity = position_size_usd / entry_price
+        logger.info(f"Calculation Steps:")
+        logger.info(f"  Raw Quantity: {raw_quantity} ({position_size_usd:.2f} / {entry_price:.8f})")
+        
+        # Round to step size
+        quantity = self.round_step_size(raw_quantity, info["step_size"])
+        logger.info(f"  Rounded Quantity: {quantity}")
+
+        # Calculate notional
+        notional = quantity * entry_price
+        logger.info(f"  Notional Value: ${notional:.2f}")
+        logger.info(f"")
+
+        # ========== VALIDATION ==========
+        logger.info(f"Validation:")
+        
+        # Check minimum quantity
+        if quantity < info["min_qty"]:
+            min_position_needed = info["min_qty"] * entry_price
+            logger.error(f"  ❌ FAILED: Quantity too small")
+            logger.error(f"     Current: {quantity}")
+            logger.error(f"     Minimum: {info['min_qty']}")
+            logger.error(f"     Need at least ${min_position_needed:.2f} position size")
+            logger.info(f"{'='*60}\n")
+            return None
+
+        # Check maximum quantity
+        if quantity > info["max_qty"]:
+            logger.error(f"  ❌ FAILED: Quantity too large")
+            logger.error(f"     Current: {quantity}")
+            logger.error(f"     Maximum: {info['max_qty']}")
+            logger.info(f"{'='*60}\n")
+            return None
+
+        # Check minimum notional
+        if notional < info["min_notional"]:
+            logger.error(f"  ❌ FAILED: Notional value too small")
+            logger.error(f"     Current: ${notional:.2f}")
+            logger.error(f"     Minimum: ${info['min_notional']:.2f}")
+            logger.error(f"     Need at least ${info['min_notional']:.2f} position size")
+            logger.info(f"{'='*60}\n")
+            return None
+
+        logger.info(f"  ✅ Quantity validation: PASSED")
+        logger.info(f"  ✅ Notional validation: PASSED")
+        logger.info(f"")
+        logger.info(f"Result:")
+        logger.info(f"  Final Quantity: {quantity}")
+        logger.info(f"  Final Notional: ${notional:.2f}")
+        logger.info(f"{'='*60}\n")
+        
+        return quantity
+        
+    except Exception as e:
+        logger.error(f"❌ Error calculating quantity: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None
+
+
+# ========== TAMBAHAN: Helper function untuk check minimum balance ==========
+
+def get_minimum_balance_info(self, symbol, leverage=10, position_size_pct=0.15):
+    """
+    Get minimum balance information for a symbol
+    
+    Returns:
+        dict dengan info minimum requirements
+    """
+    try:
+        info = self.get_symbol_info(symbol)
+        if not info:
+            return None
+        
+        # Get current price
+        current_price = self.get_current_price(symbol)
+        if not current_price:
+            return None
+        
+        min_notional = info["min_notional"]
+        min_qty = info["min_qty"]
+        
+        # Calculate minimum position size needed
+        min_position_size = max(
+            min_notional * 1.1,  # Add 10% buffer
+            min_qty * current_price
+        )
+        
+        # Calculate minimum balance needed
+        min_balance_needed = min_position_size / position_size_pct
+        
+        return {
+            "symbol": symbol,
+            "current_price": current_price,
+            "min_notional": min_notional,
+            "min_qty": min_qty,
+            "min_position_size": min_position_size,
+            "min_balance_needed": min_balance_needed,
+            "max_leverage": info["max_leverage"],
+            "position_size_pct": position_size_pct * 100,
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting minimum balance info: {e}")
+        return None
+
+
+# ========== TAMBAHAN: Function untuk suggest optimal settings ==========
+
+def suggest_position_settings(self, symbol, available_balance):
+    """
+    Suggest optimal position size and leverage based on balance
+    
+    Returns:
+        dict dengan suggested settings atau None jika balance terlalu kecil
+    """
+    try:
+        info = self.get_symbol_info(symbol)
+        if not info:
+            return None
+        
+        current_price = self.get_current_price(symbol)
+        if not current_price:
+            return None
+        
+        min_notional = info["min_notional"]
+        max_leverage = info["max_leverage"]
+        
+        # Calculate different scenarios
+        scenarios = []
+        
+        for pct in [0.10, 0.15, 0.25, 0.50, 0.75, 1.0]:
+            position_size = available_balance * pct
+            
+            if position_size >= min_notional * 1.1:
+                # Calculate quantity
+                quantity = self.calculate_quantity(symbol, current_price, position_size)
+                
+                if quantity:
+                    scenarios.append({
+                        "position_size": position_size,
+                        "position_pct": pct * 100,
+                        "quantity": quantity,
+                        "can_trade": True,
+                        "risk_level": "LOW" if pct <= 0.25 else "MEDIUM" if pct <= 0.50 else "HIGH"
+                    })
+        
+        if not scenarios:
+            # Balance too small
+            min_balance_needed = (min_notional * 1.1) / 0.10
+            return {
+                "can_trade": False,
+                "min_balance_needed": min_balance_needed,
+                "current_balance": available_balance,
+                "shortage": min_balance_needed - available_balance
+            }
+        
+        # Return best scenario (lowest risk that works)
+        best = scenarios[0]
+        
+        # Suggest leverage based on position size
+        if best["position_pct"] < 20:
+            suggested_leverage = min(20, max_leverage)
+        elif best["position_pct"] < 50:
+            suggested_leverage = min(10, max_leverage)
+        else:
+            suggested_leverage = min(5, max_leverage)
+        
+        return {
+            "can_trade": True,
+            "suggested_position_size": best["position_size"],
+            "suggested_position_pct": best["position_pct"],
+            "suggested_leverage": suggested_leverage,
+            "quantity": best["quantity"],
+            "risk_level": best["risk_level"],
+            "all_scenarios": scenarios,
+            "max_leverage": max_leverage,
+            "min_notional": min_notional
+        }
+        
+    except Exception as e:
+        logger.error(f"Error suggesting settings: {e}")
+        return None
+
+
+# ========== INFO: Ini adalah UPDATE untuk binance_futures.py ==========
+# 
+# Yang diupdate:
+# 1. calculate_quantity() - Tambah detailed logging
+# 2. get_minimum_balance_info() - NEW function
+# 3. suggest_position_settings() - NEW function (optional, bisa skip)
+# 
+# Note: Function suggest_position_settings() adalah bonus feature
+# untuk suggest optimal settings ke user. Bisa dipakai nanti kalau mau.
 
     # ============================================================
     # ========================= VALIDATION =======================
