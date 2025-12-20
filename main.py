@@ -1,4 +1,4 @@
-# main.py - PART 1/3: IMPORTS & CONVERSATION STATES (UPDATE)
+# main.py - COMPLETE VERSION - PART 1/3
 
 import logging
 import asyncio
@@ -11,7 +11,7 @@ from binance.client import Client
 from binance.exceptions import BinanceAPIException
 
 from config import TELEGRAM_TOKEN, BINANCE_API_KEY, BINANCE_API_SECRET, TOP_TOKENS
-from utils import only_allowed, format_result_for_telegram
+from utils import only_allowed, format_result_for_telegram, truncate_text
 from ai import analyze_with_gpt
 from shared_state import SharedState
 
@@ -27,7 +27,7 @@ binance_client = Client(
 
 shared_state = SharedState()
 
-# ⭐ UPDATE: Conversation states - TAMBAH 2 STATE BARU
+# Conversation states
 SELECTING_MODE, SELECTING_TOKEN, SELECTING_STRATEGY, INPUTTING_SIZE, INPUTTING_LEVERAGE = range(5)
 
 # Binance timeframe mapping
@@ -69,7 +69,7 @@ async def safe_edit_message(query, text, parse_mode="HTML", reply_markup=None):
 
 
 def parse_price_from_ai(ai_result: str, price_type: str, side: str, current_price: float) -> float:
-    """Parse price from AI response - SAMA SEPERTI SEBELUMNYA"""
+    """Parse price from AI response with smart logic for LONG/SHORT"""
     import re
     
     try:
@@ -94,8 +94,10 @@ def parse_price_from_ai(ai_result: str, price_type: str, side: str, current_pric
                 
                 if side.upper() in ['BUY', 'LONG']:
                     selected_tp = max(tp_values)
+                    logging.info(f"LONG: Selected TP = ${selected_tp:.4f} from {tp_values}")
                 else:
                     selected_tp = min(tp_values)
+                    logging.info(f"SHORT: Selected TP = ${selected_tp:.4f} from {tp_values}")
                 
                 return selected_tp
             else:
@@ -122,43 +124,471 @@ def parse_price_from_ai(ai_result: str, price_type: str, side: str, current_pric
 
 
 # =====================================================================
-# NOTE: PART 2 akan berisi input handlers (size & leverage)
-# PART 3 akan berisi execute confirm dan conversation handler
+# ========================= MAIN MENU =================================
 # =====================================================================
-# main.py - PART 2/3: MANUAL INPUT HANDLERS (SIZE & LEVERAGE)
+
+@only_allowed
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Main menu - entry point"""
+    keyboard = [
+        [
+            InlineKeyboardButton("💼 SPOT TRADING", callback_data="mode_spot"),
+            InlineKeyboardButton("📈 FUTURES TRADING", callback_data="mode_futures")
+        ],
+        [
+            InlineKeyboardButton("🤖 AUTO TRADING MONITOR", callback_data="mode_auto")
+        ],
+        [
+            InlineKeyboardButton("ℹ️ Help & Info", callback_data="help")
+        ]
+    ]
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    welcome_text = """
+🤖 <b>CRYPTO SIGNAL BOT - AI POWERED</b>
+
+Selamat datang! Bot ini memberikan sinyal trading crypto dengan analisis AI.
+
+📊 <b>Pilih Mode Trading:</b>
+
+💼 <b>SPOT TRADING</b>
+Analisis untuk trading spot (tanpa leverage)
+
+📈 <b>FUTURES TRADING</b>
+Analisis + eksekusi otomatis futures
+• Manual input position size & leverage
+• Auto TP & SL
+• ⚠️ High risk, high reward
+
+🤖 <b>AUTO TRADING MONITOR</b>
+Monitor performa auto trading bot
+
+Silakan pilih mode yang diinginkan:
+"""
+
+    if update.message:
+        await update.message.reply_text(
+            welcome_text,
+            parse_mode="HTML",
+            reply_markup=reply_markup
+        )
+    else:
+        await safe_edit_message(
+            update.callback_query,
+            welcome_text,
+            reply_markup=reply_markup
+        )
+
+    return SELECTING_MODE
+
 
 # =====================================================================
-# =================== HANDLE EXECUTE FUTURES (UPDATED) ================
+# ========================= MODE SELECTION ============================
+# =====================================================================
+
+@only_allowed
+async def handle_mode_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle mode selection"""
+    query = update.callback_query
+    await query.answer()
+
+    mode = query.data.split("_")[1]
+
+    if mode == "auto":
+        return await show_auto_trading_menu(update, context)
+
+    context.user_data["mode"] = mode
+
+    # Create token buttons
+    buttons = []
+    for i in range(0, len(TOP_TOKENS[:50]), 5):
+        row = [
+            InlineKeyboardButton(
+                token.replace("USDT", ""),
+                callback_data=f"token_{token}"
+            )
+            for token in TOP_TOKENS[i:i + 5]
+        ]
+        buttons.append(row)
+
+    buttons.append([InlineKeyboardButton("🔙 Kembali", callback_data="back_to_start")])
+
+    mode_emoji = "💼" if mode == "spot" else "📈"
+    mode_text = "SPOT TRADING" if mode == "spot" else "FUTURES TRADING"
+
+    await safe_edit_message(
+        query,
+        f"""
+{mode_emoji} <b>MODE: {mode_text}</b>
+
+📌 Pilih token yang ingin dianalisis
+
+💡 <i>Atau ketik manual nama token (contoh: BTCUSDT)</i>
+""",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+    return SELECTING_TOKEN
+
+
+# =====================================================================
+# =================== AUTO TRADING MONITOR ============================
+# =====================================================================
+
+@only_allowed
+async def show_auto_trading_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show auto trading monitor"""
+    query = update.callback_query
+
+    try:
+        state = shared_state.get_state()
+        balance = state.get("balance", {})
+        stats = state.get("stats", {})
+        is_running = state.get("is_running", False)
+
+        status_emoji = "🟢" if is_running else "🔴"
+        status_text = "RUNNING" if is_running else "STOPPED"
+
+        text = f"""
+🤖 <b>AUTO TRADING MONITOR</b>
+
+<b>Status:</b> {status_emoji} {status_text}
+
+💰 <b>Balance</b>
+Total: ${balance.get("total", 0):.2f}
+Available: ${balance.get("available", 0):.2f}
+
+📊 <b>Statistics</b>
+Total Trades: {stats.get("total_trades", 0)}
+Winning: {stats.get("winning_trades", 0)}
+Losing: {stats.get("losing_trades", 0)}
+
+⏰ <b>Last Update:</b> {state.get("last_update", "N/A")}
+"""
+
+        keyboard = [
+            [
+                InlineKeyboardButton("📊 Positions", callback_data="monitor_positions"),
+                InlineKeyboardButton("📜 Logs", callback_data="monitor_log")
+            ],
+            [
+                InlineKeyboardButton("🔄 Refresh", callback_data="mode_auto"),
+                InlineKeyboardButton("🔙 Back", callback_data="back_to_start")
+            ]
+        ]
+
+        await safe_edit_message(
+            query,
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    except Exception as e:
+        logging.error(f"Auto trading menu error: {e}")
+        await safe_edit_message(
+            query,
+            "❌ <b>Gagal memuat data</b>",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Back", callback_data="back_to_start")]
+            ])
+        )
+
+    return SELECTING_MODE
+
+
+@only_allowed
+async def handle_monitor_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle monitor actions"""
+    query = update.callback_query
+    await query.answer()
+
+    action = query.data.split("_")[1]
+    
+    try:
+        state = shared_state.get_state()
+
+        if action == "positions":
+            positions = state.get("open_positions", [])
+            text = "📊 <b>Open Positions</b>\n\n"
+            
+            if not positions:
+                text += "✅ Tidak ada posisi terbuka"
+            else:
+                for pos in positions:
+                    text += f"<b>{pos['symbol']}</b> {pos['side']}\n"
+                    text += f"PnL: ${pos.get('unrealized_pnl', 0):.2f}\n━━━\n"
+
+        elif action == "log":
+            trades = state.get("trade_log", [])
+            text = "📜 <b>Trade Log (Last 10)</b>\n\n"
+            
+            if not trades:
+                text += "✅ Belum ada trade"
+            else:
+                for trade in trades[-10:]:
+                    text += f"{trade.get('symbol', 'N/A')} {trade.get('side', 'N/A')}\n"
+                    text += f"Time: {trade.get('timestamp', 'N/A')}\n━━━\n"
+
+        else:
+            text = "❌ Unknown action"
+
+        await safe_edit_message(
+            query,
+            text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 Back", callback_data="mode_auto")]
+            ])
+        )
+
+    except Exception as e:
+        logging.error(f"Monitor action error: {e}")
+        text = "❌ Error"
+        await safe_edit_message(query, text)
+
+    return SELECTING_MODE
+
+
+# Continue to Part 2...
+# main.py - COMPLETE VERSION - PART 2/3
+
+# =====================================================================
+# ===================== TOKEN SELECTION ===============================
+# =====================================================================
+
+@only_allowed
+async def handle_token_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle token selection"""
+    query = update.callback_query
+    await query.answer()
+
+    token = query.data.split("_")[1]
+    
+    if not validate_symbol(token):
+        await query.answer(f"❌ Symbol {token} tidak valid!", show_alert=True)
+        return SELECTING_TOKEN
+    
+    context.user_data["symbol"] = token
+    mode = context.user_data.get("mode", "spot")
+    emoji = "💼" if mode == "spot" else "📈"
+
+    keyboard = [
+        [
+            InlineKeyboardButton("⚡ 15m", callback_data="strategy_15m"),
+            InlineKeyboardButton("📊 1h", callback_data="strategy_1h")
+        ],
+        [
+            InlineKeyboardButton("🎯 4h", callback_data="strategy_4h"),
+            InlineKeyboardButton("🔄 1d", callback_data="strategy_1d")
+        ],
+        [
+            InlineKeyboardButton("📈 1w", callback_data="strategy_1w")
+        ],
+        [
+            InlineKeyboardButton("🔙 Token Lain", callback_data=f"mode_{mode}")
+        ]
+    ]
+
+    await safe_edit_message(
+        query,
+        f"{emoji} <b>{token}</b>\n\n📊 Pilih timeframe:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+    return SELECTING_STRATEGY
+
+
+@only_allowed
+async def handle_manual_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle manual token input"""
+    token = update.message.text.upper().strip()
+    
+    if not token.endswith("USDT"):
+        token += "USDT"
+    
+    if not validate_symbol(token):
+        await update.message.reply_text(
+            f"❌ <b>Symbol {token} tidak ditemukan!</b>\n\nContoh: BTCUSDT, ETHUSDT",
+            parse_mode="HTML"
+        )
+        return SELECTING_TOKEN
+
+    context.user_data["symbol"] = token
+    mode = context.user_data.get("mode", "spot")
+
+    await update.message.reply_text(
+        f"<b>{token}</b>\n\n📊 Pilih timeframe:",
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("⚡ 15m", callback_data="strategy_15m"),
+                InlineKeyboardButton("📊 1h", callback_data="strategy_1h")
+            ],
+            [
+                InlineKeyboardButton("🎯 4h", callback_data="strategy_4h"),
+                InlineKeyboardButton("🔄 1d", callback_data="strategy_1d")
+            ],
+            [InlineKeyboardButton("📈 1w", callback_data="strategy_1w")],
+            [InlineKeyboardButton("🔙 Kembali", callback_data=f"mode_{mode}")]
+        ])
+    )
+
+    return SELECTING_STRATEGY
+
+
+# =====================================================================
+# ===================== STRATEGY / ANALYSIS ===========================
+# =====================================================================
+
+@only_allowed
+async def handle_strategy_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle strategy/timeframe and perform analysis"""
+    query = update.callback_query
+    await query.answer()
+
+    timeframe = query.data.split("_")[1]
+    symbol = context.user_data.get("symbol")
+    mode = context.user_data.get("mode", "spot")
+
+    if not symbol:
+        await query.answer("❌ Symbol tidak ditemukan!", show_alert=True)
+        return await start(update, context)
+
+    await safe_edit_message(
+        query,
+        f"⏳ <b>Menganalisis {symbol}</b>\n\nMode: {mode.upper()}\nTimeframe: {timeframe}\n\n<i>Tunggu 10-30 detik...</i>"
+    )
+
+    try:
+        # Get klines
+        klines = binance_client.get_klines(
+            symbol=symbol,
+            interval=TIMEFRAME_MAP[timeframe],
+            limit=100
+        )
+
+        if not klines:
+            raise Exception("Gagal mendapatkan data dari Binance")
+
+        # Parse OHLC
+        ohlc = [{
+            "open": float(k[1]),
+            "high": float(k[2]),
+            "low": float(k[3]),
+            "close": float(k[4]),
+            "volume": float(k[5])
+        } for k in klines]
+
+        # Get AI analysis
+        loop = asyncio.get_running_loop()
+        gpt_result = await loop.run_in_executor(
+            None,
+            analyze_with_gpt,
+            symbol,
+            timeframe,
+            ohlc[-1],
+            mode
+        )
+
+        if not gpt_result:
+            raise Exception("AI analysis gagal")
+
+        formatted = format_result_for_telegram(gpt_result)
+        current_price = ohlc[-1]["close"]
+
+        # Save to context
+        context.user_data["analysis"] = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "mode": mode,
+            "ai_result": gpt_result,
+            "current_price": current_price
+        }
+
+        # Build keyboard
+        keyboard = [
+            [
+                InlineKeyboardButton("🔄 Analisis Ulang", callback_data=f"strategy_{timeframe}"),
+                InlineKeyboardButton("⏱️ Timeframe Lain", callback_data=f"token_{symbol}")
+            ]
+        ]
+
+        # Add execute button for futures
+        if mode == "futures":
+            keyboard.insert(0, [
+                InlineKeyboardButton("🚀 EXECUTE FUTURES", callback_data="execute_multi_tf")
+            ])
+
+        keyboard.append([
+            InlineKeyboardButton("🔙 Token Lain", callback_data=f"mode_{mode}"),
+            InlineKeyboardButton("🏠 Menu", callback_data="back_to_start")
+        ])
+
+        message_text = f"""<b>📊 ANALISIS {symbol}</b>
+━━━━━━━━━━━━━━━━━━━━
+
+<b>Mode:</b> {mode.upper()}
+<b>Timeframe:</b> {timeframe}
+<b>Price:</b> ${current_price:,.4f}
+
+━━━━━━━━━━━━━━━━━━━━
+{formatted}
+━━━━━━━━━━━━━━━━━━━━
+
+⚠️ <i>DYOR before trading!</i>
+"""
+        
+        message_text = truncate_text(message_text, 4000)
+
+        await safe_edit_message(
+            query,
+            message_text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    except Exception as e:
+        logging.error(f"Analysis error: {e}")
+        await safe_edit_message(
+            query,
+            f"❌ <b>Gagal analisis</b>\n\nError: {str(e)}",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Coba Lagi", callback_data=f"strategy_{timeframe}")],
+                [InlineKeyboardButton("🏠 Menu", callback_data="back_to_start")]
+            ])
+        )
+
+    return SELECTING_MODE
+
+
+# =====================================================================
+# ================= FUTURES EXECUTION (MANUAL INPUT) ==================
 # =====================================================================
 
 @only_allowed
 async def handle_execute_futures(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show balance and ask for position size - UPDATED VERSION"""
+    """Ask for position size"""
     query = update.callback_query
     await query.answer()
 
     analysis = context.user_data.get("analysis")
     if not analysis:
-        await query.answer("❌ Data analisis tidak ditemukan!", show_alert=True)
+        await query.answer("❌ Data tidak ditemukan!", show_alert=True)
         return await start(update, context)
 
     try:
         from binance_futures import BinanceFuturesTrader
         futures_trader = BinanceFuturesTrader()
         
-        # Get balance
         balance = futures_trader.get_futures_balance()
         if not balance:
             raise Exception("Gagal mendapatkan balance")
         
         available = balance.get("availableBalance", 0)
         
-        # Get symbol info for minimum
         symbol_info = futures_trader.get_symbol_info(analysis["symbol"])
         min_notional = symbol_info.get("min_notional", 5.0) if symbol_info else 5.0
         max_leverage = symbol_info.get("max_leverage", 125) if symbol_info else 125
         
-        # Save to context
         context.user_data["available_balance"] = available
         context.user_data["min_notional"] = min_notional
         context.user_data["max_leverage"] = max_leverage
@@ -166,29 +596,22 @@ async def handle_execute_futures(update: Update, context: ContextTypes.DEFAULT_T
         await safe_edit_message(
             query,
             f"""
-💰 <b>SETUP FUTURES ORDER - STEP 1/2</b>
+💰 <b>SETUP FUTURES - STEP 1/2</b>
 
-📊 <b>Balance Info:</b>
-Available: <b>${available:.2f}</b>
-Symbol: {analysis['symbol']}
+<b>Balance:</b> ${available:.2f}
+<b>Symbol:</b> {analysis['symbol']}
 
-⚙️ <b>Requirements:</b>
-Minimum: ${min_notional:.2f}
-Maximum: ${available:.2f}
+<b>Requirements:</b>
+Min: ${min_notional:.2f}
+Max: ${available:.2f}
 
 ━━━━━━━━━━━━━━━━━━━━
 
-💵 <b>Berapa position size yang ingin digunakan?</b>
+💵 <b>Berapa position size?</b>
 
-💡 <b>Contoh:</b>
-• Ketik: <code>1</code> untuk $1
-• Ketik: <code>2.5</code> untuk $2.50
-• Ketik: <code>5</code> untuk $5
-• Ketik: <code>{available:.2f}</code> untuk ALL-IN
+Contoh: ketik <code>5</code> untuk $5
 
-⚠️ Position size harus: ${min_notional:.2f} - ${available:.2f}
-
-<i>Ketik angka position size di chat...</i>
+<i>Ketik angka di chat...</i>
 """,
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("❌ Batal", callback_data="execute_cancel")]
@@ -196,10 +619,10 @@ Maximum: ${available:.2f}
         )
 
     except Exception as e:
-        logging.error(f"Error getting balance: {e}")
+        logging.error(f"Error: {e}")
         await safe_edit_message(
             query,
-            f"❌ <b>Error:</b> {str(e)}\n\nSilakan coba lagi.",
+            f"❌ Error: {str(e)}",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 Kembali", callback_data="back_to_start")]
             ])
@@ -208,10 +631,6 @@ Maximum: ${available:.2f}
 
     return INPUTTING_SIZE
 
-
-# =====================================================================
-# ======================= HANDLE SIZE INPUT ===========================
-# =====================================================================
 
 @only_allowed
 async def handle_size_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -222,85 +641,45 @@ async def handle_size_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         available = context.user_data.get("available_balance", 0)
         min_notional = context.user_data.get("min_notional", 5.0)
-        analysis = context.user_data.get("analysis")
         
-        # Validate minimum
         if position_size < min_notional:
             await update.message.reply_text(
-                f"❌ <b>Position size terlalu kecil!</b>\n\n"
-                f"Minimum: <b>${min_notional:.2f}</b>\n"
-                f"Anda input: ${position_size:.2f}\n\n"
-                f"Silakan input lagi dengan nilai ≥ ${min_notional:.2f}",
+                f"❌ <b>Terlalu kecil!</b>\n\nMin: ${min_notional:.2f}\nInput: ${position_size:.2f}",
                 parse_mode="HTML"
             )
             return INPUTTING_SIZE
         
-        # Validate maximum
         if position_size > available:
             await update.message.reply_text(
-                f"❌ <b>Position size melebihi balance!</b>\n\n"
-                f"Available: <b>${available:.2f}</b>\n"
-                f"Anda input: ${position_size:.2f}\n\n"
-                f"Silakan input lagi dengan nilai ≤ ${available:.2f}",
+                f"❌ <b>Melebihi balance!</b>\n\nAvailable: ${available:.2f}\nInput: ${position_size:.2f}",
                 parse_mode="HTML"
             )
             return INPUTTING_SIZE
         
-        # Save position size
         context.user_data["position_size"] = position_size
         
-        # Calculate percentage
+        max_leverage = context.user_data.get("max_leverage", 125)
         pct = (position_size / available) * 100
         
-        # Get max leverage
-        max_leverage = context.user_data.get("max_leverage", 125)
-        
-        # Show warning if high percentage
-        warning = ""
-        if pct > 50:
-            warning = f"\n⚠️ <b>HIGH RISK:</b> Menggunakan {pct:.1f}% dari balance!"
-        
-        # Ask for leverage
         await update.message.reply_text(
             f"""
-✅ <b>Position size: ${position_size:.2f}</b> ({pct:.1f}% dari balance){warning}
+✅ <b>Size: ${position_size:.2f}</b> ({pct:.1f}%)
 
 ━━━━━━━━━━━━━━━━━━━━
 
 ⚡ <b>STEP 2/2 - Pilih Leverage</b>
 
-📊 <b>Info Leverage untuk {analysis['symbol']}:</b>
-Minimum: 1x
-Maximum: {max_leverage}x
+Range: 1x - {max_leverage}x
 
-💡 <b>Contoh:</b>
-• Ketik: <code>10</code> untuk 10x
-• Ketik: <code>20</code> untuk 20x
-• Ketik: <code>50</code> untuk 50x
+Contoh: ketik <code>20</code> untuk 20x
 
-⚠️ <b>Perhatian Leverage:</b>
+⚠️ <b>Risk Level:</b>
+• 1x-10x: Low Risk
+• 10x-25x: Medium Risk
+• 25x-50x: High Risk
+• 50x+: Very High Risk
 
-<b>Low Risk (1x-10x):</b>
-• Liquidation jauh dari entry
-• Cocok untuk pemula
-• Profit/loss lebih kecil
-
-<b>Medium Risk (10x-25x):</b>
-• Balanced risk/reward
-• Liquidation ~4-10% dari entry
-• Untuk trader berpengalaman
-
-<b>High Risk (25x-50x):</b>
-• Liquidation ~2-4% dari entry
-• Profit/loss sangat besar
-• Hanya untuk expert
-
-<b>Very High Risk (50x+):</b>
-• Liquidation < 2% dari entry
-• Bisa liquidasi dalam hitungan menit
-• Extreme risk!
-
-<i>Ketik angka leverage yang diinginkan...</i>
+<i>Ketik angka leverage...</i>
 """,
             parse_mode="HTML"
         )
@@ -309,113 +688,62 @@ Maximum: {max_leverage}x
         
     except ValueError:
         await update.message.reply_text(
-            "❌ <b>Format salah!</b>\n\n"
-            "Silakan input angka saja.\n\n"
-            "Contoh: <code>1</code> atau <code>2.5</code> atau <code>5</code>",
+            "❌ <b>Format salah!</b>\n\nContoh: <code>5</code> atau <code>10.5</code>",
             parse_mode="HTML"
         )
         return INPUTTING_SIZE
 
 
-# =====================================================================
-# ===================== HANDLE LEVERAGE INPUT =========================
-# =====================================================================
-
 @only_allowed
 async def handle_leverage_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle leverage input and show confirmation"""
+    """Handle leverage input"""
     try:
         leverage_text = update.message.text.strip()
         leverage = int(float(leverage_text))
         
         max_leverage = context.user_data.get("max_leverage", 125)
-        analysis = context.user_data.get("analysis")
         position_size = context.user_data.get("position_size", 0)
-        available = context.user_data.get("available_balance", 0)
+        analysis = context.user_data.get("analysis")
         
-        # Validate minimum
         if leverage < 1:
             await update.message.reply_text(
-                "❌ <b>Leverage terlalu kecil!</b>\n\n"
-                "Minimum: <b>1x</b>\n\n"
-                "Silakan input lagi.",
+                "❌ <b>Minimal 1x!</b>",
                 parse_mode="HTML"
             )
             return INPUTTING_LEVERAGE
         
-        # Validate maximum
         if leverage > max_leverage:
             await update.message.reply_text(
-                f"❌ <b>Leverage terlalu besar!</b>\n\n"
-                f"Maximum untuk {analysis['symbol']}: <b>{max_leverage}x</b>\n"
-                f"Anda input: {leverage}x\n\n"
-                f"Silakan input lagi dengan nilai ≤ {max_leverage}x",
+                f"❌ <b>Maksimal {max_leverage}x!</b>\n\nInput: {leverage}x",
                 parse_mode="HTML"
             )
             return INPUTTING_LEVERAGE
         
-        # Save leverage
         context.user_data["leverage"] = leverage
         
-        # Calculate risk level
         if leverage <= 10:
             risk_level = "🟢 LOW RISK"
-            risk_emoji = "🟢"
         elif leverage <= 25:
             risk_level = "🟡 MEDIUM RISK"
-            risk_emoji = "🟡"
         elif leverage <= 50:
             risk_level = "🟠 HIGH RISK"
-            risk_emoji = "🟠"
         else:
             risk_level = "🔴 VERY HIGH RISK"
-            risk_emoji = "🔴"
-        
-        # Calculate liquidation estimate (rough)
-        if leverage > 0:
-            liq_distance = (100 / leverage)
-            liq_text = f"~{liq_distance:.2f}% dari entry price"
-        else:
-            liq_text = "N/A"
-        
-        # Show confirmation
-        pct = (position_size / available) * 100
         
         await update.message.reply_text(
             f"""
-📋 <b>KONFIRMASI FUTURES ORDER</b>
+📋 <b>KONFIRMASI ORDER</b>
 
 ━━━━━━━━━━━━━━━━━━━━
-📊 <b>ORDER DETAILS</b>
-━━━━━━━━━━━━━━━━━━━━
 
-Symbol: <b>{analysis['symbol']}</b>
-Timeframe: {analysis['timeframe']}
-Mode: FUTURES
-
-💰 <b>Position:</b>
-Size: <b>${position_size:.2f}</b> ({pct:.1f}% balance)
-Leverage: <b>{leverage}x</b>
-Risk Level: {risk_level}
-
-📍 <b>Liquidation Distance:</b>
-{liq_text}
-
-🎯 <b>Trading Setup:</b>
-• Entry, TP, SL: Auto by AI
-• TP/SL orders: Auto-placed
-• Position: Auto-calculated
+<b>Symbol:</b> {analysis['symbol']}
+<b>Size:</b> ${position_size:.2f}
+<b>Leverage:</b> {leverage}x
+<b>Risk:</b> {risk_level}
 
 ━━━━━━━━━━━━━━━━━━━━
-{risk_emoji} <b>RISK WARNING</b>
-━━━━━━━━━━━━━━━━━━━━
 
-Dengan {leverage}x leverage:
-• Pergerakan {100/leverage:.2f}% = 100% profit/loss
-• Liquidation bisa terjadi cepat
-• Monitor position secara aktif!
-
-<b>Apakah Anda yakin ingin melanjutkan?</b>
+<b>Lanjutkan?</b>
 """,
             parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([
@@ -430,398 +758,11 @@ Dengan {leverage}x leverage:
         
     except ValueError:
         await update.message.reply_text(
-            "❌ <b>Format salah!</b>\n\n"
-            "Silakan input angka bulat saja.\n\n"
-            "Contoh: <code>10</code> atau <code>20</code> atau <code>50</code>",
+            "❌ <b>Format salah!</b>\n\nContoh: <code>10</code> atau <code>20</code>",
             parse_mode="HTML"
         )
         return INPUTTING_LEVERAGE
 
 
-# =====================================================================
-# NOTE: PART 3 akan berisi execute confirm handler dan conversation setup
-# =====================================================================
-# main.py - PART 3/3: EXECUTE CONFIRM & CONVERSATION HANDLER (FINAL)
+# Continue to Part 3...
 
-# =====================================================================
-# =================== EXECUTE CONFIRM (MANUAL INPUT) ==================
-# =====================================================================
-
-@only_allowed
-async def handle_execute_confirm_manual(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Execute futures order with manual size & leverage"""
-    query = update.callback_query
-    await query.answer()
-
-    analysis = context.user_data.get("analysis")
-    position_size = context.user_data.get("position_size")
-    leverage = context.user_data.get("leverage")
-    
-    if not analysis or not position_size or not leverage:
-        await query.answer("❌ Data tidak lengkap! Silakan ulang dari awal.", show_alert=True)
-        return await start(update, context)
-
-    await safe_edit_message(
-        query,
-        "⏳ <b>Memasang posisi...</b>\n\nMohon tunggu...",
-    )
-
-    try:
-        from binance_futures import BinanceFuturesTrader
-
-        futures_trader = BinanceFuturesTrader()
-        ai_result = analysis["ai_result"]
-        current_price = analysis["current_price"]
-
-        # Validate AI response
-        if not ai_result or len(ai_result.strip()) < 20:
-            raise Exception("AI response tidak valid")
-
-        # Detect side (LONG/SHORT)
-        ai_upper = ai_result.upper()
-        if "🟢 LONG" in ai_result or "**LONG**" in ai_result or ("POSISI: LONG" in ai_upper):
-            side = "BUY"
-            logging.info("✅ Detected LONG position")
-        elif "🔴 SHORT" in ai_result or "**SHORT**" in ai_result or ("POSISI: SHORT" in ai_upper):
-            side = "SELL"
-            logging.info("✅ Detected SHORT position")
-        elif "LONG" in ai_upper and "SHORT" not in ai_upper:
-            side = "BUY"
-        elif "SHORT" in ai_upper and "LONG" not in ai_upper:
-            side = "SELL"
-        else:
-            if "WAIT" in ai_upper or "HOLD" in ai_upper:
-                await safe_edit_message(
-                    query,
-                    "❌ <b>AI Menyarankan WAIT</b>\n\nTidak ada sinyal trading yang jelas.",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("🔄 Analisis Ulang", callback_data=f"strategy_{analysis['timeframe']}")],
-                        [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_to_start")]
-                    ])
-                )
-                return SELECTING_MODE
-            raise Exception("Tidak dapat mendeteksi LONG atau SHORT")
-
-        # Parse prices
-        entry_price = parse_price_from_ai(ai_result, 'entry', side, current_price)
-        tp_price = parse_price_from_ai(ai_result, 'tp', side, current_price)
-        sl_price = parse_price_from_ai(ai_result, 'sl', side, current_price)
-
-        logging.info(f"📊 Parsed: Entry=${entry_price:.4f}, TP=${tp_price:.4f}, SL=${sl_price:.4f}")
-
-        # Validate price levels
-        if side == "BUY":
-            if tp_price <= entry_price or sl_price >= entry_price:
-                raise Exception(f"Invalid price levels for LONG")
-        else:
-            if tp_price >= entry_price or sl_price <= entry_price:
-                raise Exception(f"Invalid price levels for SHORT")
-
-        logging.info("✅ Price validation passed")
-
-        # Calculate quantity
-        quantity = futures_trader.calculate_quantity(
-            analysis["symbol"],
-            entry_price,
-            position_size
-        )
-        
-        if not quantity or quantity <= 0:
-            raise Exception(
-                f"Gagal menghitung quantity!\n\n"
-                f"Position size: ${position_size:.2f}\n"
-                f"Entry price: ${entry_price:.4f}\n\n"
-                f"Kemungkinan:\n"
-                f"• Position size terlalu kecil untuk symbol ini\n"
-                f"• Coba naikkan position size atau pilih symbol lain"
-            )
-
-        # Place order with user-defined leverage
-        logging.info(f"🚀 Placing: {side} {quantity} {analysis['symbol']} @{leverage}x")
-        result = futures_trader.place_futures_order(
-            symbol=analysis["symbol"],
-            side=side,
-            quantity=quantity,
-            entry_price=entry_price,
-            tp_price=tp_price,
-            sl_price=sl_price,
-            leverage=leverage  # Use manual input leverage
-        )
-
-        if not result.get("success"):
-            raise Exception(result.get("error", "Unknown error from Binance"))
-
-        # Calculate PnL
-        if side == "BUY":
-            profit_pct = (tp_price - entry_price) / entry_price * 100
-            loss_pct = (entry_price - sl_price) / entry_price * 100
-        else:
-            profit_pct = (entry_price - tp_price) / entry_price * 100
-            loss_pct = (sl_price - entry_price) / entry_price * 100
-
-        rr = profit_pct / loss_pct if loss_pct > 0 else 0
-        max_profit = position_size * (profit_pct / 100) * leverage
-        max_loss = position_size * (loss_pct / 100) * leverage
-
-        success_msg = f"""
-✅ <b>POSISI BERHASIL DIPASANG!</b>
-
-━━━━━━━━━━━━━━━━━━━━
-📊 <b>ORDER DETAILS</b>
-━━━━━━━━━━━━━━━━━━━━
-
-Symbol: {analysis['symbol']}
-Side: <b>{"🟢 LONG" if side == "BUY" else "🔴 SHORT"}</b>
-Leverage: <b>{leverage}x</b>
-
-━━━━━━━━━━━━━━━━━━━━
-💰 <b>PRICES</b>
-━━━━━━━━━━━━━━━━━━━━
-
-Entry: ${entry_price:.4f}
-TP: ${tp_price:.4f} (<b>+{profit_pct:.2f}%</b>)
-SL: ${sl_price:.4f} (<b>-{loss_pct:.2f}%</b>)
-
-━━━━━━━━━━━━━━━━━━━━
-📦 <b>POSITION</b>
-━━━━━━━━━━━━━━━━━━━━
-
-Quantity: {quantity}
-Position Size: ${position_size:.2f}
-Margin Used: ${position_size:.2f}
-
-━━━━━━━━━━━━━━━━━━━━
-📈 <b>RISK/REWARD</b>
-━━━━━━━━━━━━━━━━━━━━
-
-R/R Ratio: 1:{rr:.2f}
-Max Profit: <b>${max_profit:.2f}</b>
-Max Loss: <b>-${max_loss:.2f}</b>
-
-━━━━━━━━━━━━━━━━━━━━
-🎯 <b>ORDER IDs</b>
-━━━━━━━━━━━━━━━━━━━━
-
-Entry: {result['entry_order']['orderId']}
-TP: {result['tp_order']['orderId']}
-SL: {result['sl_order']['orderId']}
-
-━━━━━━━━━━━━━━━━━━━━
-⚠️ <b>REMINDER</b>
-━━━━━━━━━━━━━━━━━━━━
-
-• Monitor posisi secara aktif!
-• Jangan lupa cek liquidation price
-• Siap-siap adjust jika market volatile
-
-<i>Good luck & trade safely! 🚀</i>
-"""
-
-        keyboard = [
-            [InlineKeyboardButton("📊 Lihat di Binance", url=f"https://www.binance.com/en/futures/{analysis['symbol']}")],
-            [InlineKeyboardButton("📈 Trade Lagi", callback_data=f"mode_{analysis['mode']}")],
-            [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_to_start")]
-        ]
-
-        await safe_edit_message(
-            query,
-            success_msg,
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-    except Exception as e:
-        logging.error(f"Execute error: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
-        
-        await safe_edit_message(
-            query,
-            f"""
-❌ <b>GAGAL MEMASANG POSISI!</b>
-
-<b>Error:</b> {str(e)}
-
-<b>Kemungkinan penyebab:</b>
-• Balance tidak cukup
-• Symbol tidak tersedia untuk futures
-• Position size terlalu kecil (coba naikkan)
-• Leverage tidak valid (coba kurangi)
-• Koneksi ke Binance bermasalah
-
-<b>Debug Info:</b>
-Symbol: {analysis.get('symbol', 'N/A')}
-Position Size: ${position_size:.2f}
-Leverage: {leverage}x
-
-<b>Solusi:</b>
-1. Coba naikkan position size
-2. Atau kurangi leverage
-3. Atau pilih symbol lain
-
-Silakan coba lagi!
-""",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔄 Coba Lagi", callback_data="execute_multi_tf")],
-                [InlineKeyboardButton("🏠 Menu Utama", callback_data="back_to_start")]
-            ])
-        )
-
-    return SELECTING_MODE
-
-
-@only_allowed
-async def handle_execute_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancel execution"""
-    query = update.callback_query
-    await query.answer("❌ Dibatalkan", show_alert=True)
-    return await start(update, context)
-
-
-# =====================================================================
-# ========================= BUTTON ROUTER =============================
-# =====================================================================
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Central button handler - routes to appropriate function"""
-    query = update.callback_query
-    
-    try:
-        await query.answer()
-        callback_data = query.data
-
-        logging.info(f"Button pressed: {callback_data}")
-
-        # Route to appropriate handler
-        if callback_data == "back_to_start":
-            return await start(update, context)
-        elif callback_data == "help":
-            return await help_command(update, context)
-        elif callback_data.startswith("monitor_"):
-            return await handle_monitor_actions(update, context)
-        elif callback_data.startswith("mode_"):
-            return await handle_mode_selection(update, context)
-        elif callback_data.startswith("token_"):
-            return await handle_token_selection(update, context)
-        elif callback_data.startswith("strategy_"):
-            return await handle_strategy_selection(update, context)
-        elif callback_data == "execute_confirm_manual":  # NEW
-            return await handle_execute_confirm_manual(update, context)
-        elif callback_data == "execute_cancel":
-            return await handle_execute_cancel(update, context)
-        elif callback_data == "execute_multi_tf":
-            return await handle_execute_futures(update, context)
-        else:
-            logging.warning(f"Unknown callback: {callback_data}")
-            await query.answer("❌ Invalid action", show_alert=True)
-            return SELECTING_MODE
-
-    except Exception as e:
-        logging.error(f"Button handler error: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
-        
-        try:
-            await query.answer("❌ Error. Coba lagi.", show_alert=True)
-        except:
-            pass
-        
-        return await start(update, context)
-
-
-# =====================================================================
-# ========================= ERROR HANDLER ==============================
-# =====================================================================
-
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Global error handler"""
-    logging.error(f"Update {update} caused error {context.error}")
-    import traceback
-    logging.error(traceback.format_exc())
-    
-    try:
-        if update and update.effective_message:
-            await update.effective_message.reply_text(
-                "❌ <b>Terjadi kesalahan!</b>\n\n"
-                "Bot akan restart. Silakan /start kembali.",
-                parse_mode="HTML"
-            )
-    except Exception as e:
-        logging.error(f"Error in error handler: {e}")
-
-
-# =====================================================================
-# ========================= MAIN =======================================
-# =====================================================================
-
-def main():
-    """Start the bot"""
-    try:
-        logging.info("🤖 Starting bot...")
-        
-        app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-
-        # ⭐ UPDATE: Conversation handler dengan state baru
-        conv_handler = ConversationHandler(
-            entry_points=[
-                CommandHandler("start", start),
-                CallbackQueryHandler(button_handler)
-            ],
-            states={
-                SELECTING_MODE: [
-                    CallbackQueryHandler(button_handler)
-                ],
-                SELECTING_TOKEN: [
-                    CallbackQueryHandler(button_handler),
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_manual_token)
-                ],
-                SELECTING_STRATEGY: [
-                    CallbackQueryHandler(button_handler)
-                ],
-                # ⭐ NEW STATES
-                INPUTTING_SIZE: [
-                    CallbackQueryHandler(button_handler),
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_size_input)
-                ],
-                INPUTTING_LEVERAGE: [
-                    CallbackQueryHandler(button_handler),
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, handle_leverage_input)
-                ]
-            },
-            fallbacks=[
-                CommandHandler("start", start),
-                CommandHandler("help", help_command)
-            ],
-            allow_reentry=True,
-            conversation_timeout=600
-        )
-
-        app.add_handler(conv_handler)
-        app.add_handler(CommandHandler("help", help_command))
-        app.add_error_handler(error_handler)
-
-        logging.info("✅ Bot started successfully!")
-        logging.info("="*60)
-        logging.info("Bot is running... Press Ctrl+C to stop.")
-        logging.info("="*60)
-        
-        app.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True
-        )
-
-    except Exception as e:
-        logging.error(f"❌ Failed to start bot: {e}")
-        import traceback
-        logging.error(traceback.format_exc())
-        raise
-
-
-if __name__ == "__main__":
-    main()
-
-
-# =====================================================================
-# NOTE: Jangan lupa tambahkan semua function dari Part 1 & Part 2
-# yang belum ada (start, handle_mode_selection, handle_token_selection, 
-# handle_strategy_selection, handle_monitor_actions, help_command, dll)
-# =====================================================================
